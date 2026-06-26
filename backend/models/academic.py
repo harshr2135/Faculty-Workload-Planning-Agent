@@ -8,6 +8,33 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from backend.models.base import Base, TimestampMixin
 
 
+class StudentBatch(Base, TimestampMixin):
+    """Admission cohort (e.g. 2023-27) for a department."""
+
+    __tablename__ = "student_batches"
+    __table_args__ = (
+        UniqueConstraint(
+            "department_id",
+            "batch_code",
+            name="uq_student_batches_dept_code",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    department_id: Mapped[int] = mapped_column(
+        ForeignKey("departments.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    batch_code: Mapped[str] = mapped_column(String(20), nullable=False)
+
+    department: Mapped["Department"] = relationship(back_populates="student_batches")
+    courses: Mapped[list["Course"]] = relationship(
+        back_populates="batch",
+        cascade="all, delete-orphan",
+    )
+
+
 class AcademicYearLevel(Base, TimestampMixin):
     """Student year band within a department (e.g. 2nd year = sem 3–4)."""
 

@@ -1,7 +1,7 @@
 # Faculty Workload Planning Agent — Project Tracker
 
 > Living document for tracking completed and pending work.  
-> **Last updated:** 2026-06-25 (planning rules: similarity matching, dual-faculty labs, semester-fixed timetable)
+> **Last updated:** 2026-06-25 (multi-batch course catalog, lecture halls, PEC/SEC rules)
 
 ---
 
@@ -42,19 +42,20 @@ Optimization run
 | PostgreSQL database | ✅ Done | Docker on port **15432** (avoids local Postgres conflict) |
 | Faculty data (AIML) | ✅ Done | 39 faculty, 160 specializations imported |
 | Faculty import (Excel) | ✅ Done | CLI script + API endpoint |
-| **Subjects / courses (per semester)** | ✅ Done | 26 courses (sem 3–7), lectures + practical hours |
-| **Classrooms (available)** | ✅ Done | 424, 431, 432, 433, 439 |
+| **Subjects / courses (per semester)** | ✅ Done | 81 courses across 3 batches (2022-26, 2023-27, 2024-28); course types incl. PEC/SEC |
+| **Classrooms (available)** | ✅ Done | 424, 431, 432, 433, 439 (section-wise theory) |
+| **Lecture halls (college)** | ✅ Done | LH-1 … LH-6; PEC/SEC combined 2–3 sections |
 | **Laboratories (available)** | ✅ Done | 508, 509, 510 |
 | **Semesters / academic year rules** | ✅ Done | Year levels, sections, working days configured |
 | Timetable / time slots | ✅ Done | 7 teaching periods + break + lunch (08:30–16:20) |
 | Policies (AICTE rules) | ✅ Done | Designation hours, min courses, lab limits, similarity matching, dual-faculty labs |
 | Frontend | ✅ Admin UI | Dashboard, faculty, courses, rooms, timetable, policies |
-| Optimization engine | ❌ Not started | OR-Tools CP-SAT — core of capstone |
+| Optimization engine | ✅ Slice 1–2 | Workload + weekly timetable grid (day/slot/room) |
 | AI explanation layer | ❌ Not started | Explain-only; no optimization via LLM |
 | Auth / RBAC | ❌ Not started | JWT, dept head, admin roles |
 | Reports & analytics | ❌ Not started | PDF/Excel, fairness dashboard |
 
-**Phase:** Phase 2b (Admin UI) done → **Optimizer prototype** next
+**Phase:** Phase 5 Slice 2 done → **AI explanations / hard AICTE mins** next
 
 ---
 ## Completed Tasks
@@ -82,7 +83,11 @@ Optimization run
 - [x] AIML year rules: 2nd yr (sem 3–4, 5 sections, Mon–Fri), 3rd yr (sem 5–6, 4 sections, Mon–Fri), 4th yr (sem 7, 2 sections, Thu–Fri)
 - [x] Seed classrooms: 424, 431, 432, 433, 439
 - [x] Seed laboratories: 508, 509, 510
-- [x] Course Excel import from `Courses.xlsx` (26 subjects)
+- [x] Course Excel import — batch, course type, 81 rows (`Courses.xlsx`)
+- [x] `student_batches` model (2022-26, 2023-27, 2024-28)
+- [x] `lecture_halls` model (6 halls, 2–3 combined sections)
+- [x] Course fields: `batch_id`, `course_type`, `requires_lecture_hall` (PEC/SEC)
+- [x] API: `GET /student-batches`, `/lecture-halls`, courses `?batch=`
 - [x] CLI: `scripts/db/seed_aiml_master_data.py`, `scripts/db/import_courses.py`
 - [x] API: `POST /api/v1/department/seed-aiml`, `POST /api/v1/courses/import`
 - [x] API: `GET /api/v1/courses`, `/classrooms`, `/laboratories`, `/semesters`, `/academic-year-levels`
@@ -178,12 +183,31 @@ Optimization run
 - [x] API to read / seed policies
 - [x] Course–faculty similarity matching (runtime inference, not mapping table)
 
-### Phase 5 — Optimization engine (core)
-- [ ] `optimization/models/problem_definition.py` — input/output contracts
-- [ ] `optimization/preprocessing/problem_builder.py`
-- [ ] Constraints: teaching hours, specialization similarity match, max hours
-- [ ] Constraints: lab limits, **dual faculty per lab session**, leave/availability (when data exists)
-- [ ] Constraints: **semester-fixed weekly timetable** (single grid, not re-planned weekly)
+**Phase:** Phase 5 Slice 1 done → **Timetable grid (Slice 2)** next
+
+### Phase 5 — Optimization engine (Slice 1 ✅)
+- [x] `optimization/models/problem_definition.py` — input contracts
+- [x] `optimization/preprocessing/slot_builder.py` — theory/lab slots, PEC/SEC LH groups
+- [x] `optimization/preprocessing/eligibility.py` — specialization similarity + AP fallback
+- [x] `optimization/engine/cpsat_solver.py` — OR-Tools CP-SAT
+- [x] `optimization/postprocessing/validator.py` — AICTE policy warnings
+- [x] `allocation_runs` model + `AllocationService`
+- [x] API: `POST /api/v1/allocations/run`, `GET /api/v1/allocations/{id}`
+- [x] Admin UI: Allocation page
+- [x] Unit tests: slot builder + tiny CP-SAT scenario
+
+### Phase 5 — Optimization engine (Slice 2 ✅)
+- [x] Weekly timetable CP-SAT (`timetable_cpsat_solver.py`)
+- [x] Theory sessions spread across working days; labs in continuous blocks (no lunch crossing)
+- [x] Room assignment: classrooms, lecture halls (PEC/SEC), laboratories
+- [x] Conflicts: faculty, room, student section per day+period
+- [x] Semester-fixed weekly grid stored in `allocation_runs.solution`
+- [x] UI: weekly timetable view on Allocation page
+
+### Phase 5 — Optimization engine (Slice 3 — pending)
+- [ ] Hard AICTE minimum hours/courses per faculty (currently warnings only)
+- [ ] Faculty preference / leave constraints
+- [ ] Explainability payload for LLM layer
 - [ ] Objectives: fairness, preference satisfaction, workload balance
 - [ ] CP-SAT solver integration (`optimization/engine/cpsat_solver.py`)
 - [ ] Postprocessing: solution validator, conflict report, explainability payload
@@ -251,7 +275,8 @@ Optimization run
 |---------|--------|--------|-------|
 | AIML faculty | Excel | ✅ Imported | 39 faculty, dept `AI&ML`, specializations |
 | Faculty cabins | Excel (col on faculty sheet) | ✅ Imported | `cabin_number` on faculty row |
-| **Subjects / courses** | Excel | ✅ Imported | 26 courses, sem 3–7; lectures + practical hrs |
+| **Subjects / courses** | Excel | ✅ Ready | 81 rows, 3 batches; re-import with `--replace` |
+| **Lecture halls** | Config | ✅ Seeded | LH-1 … LH-6; PEC/SEC combined sections |
 | **Classrooms** | Config | ✅ Seeded | 424, 431, 432, 433, 439 |
 | **Laboratories** | Config | ✅ Seeded | 508, 509, 510 |
 | **Semesters / year rules** | Config | ✅ Seeded | Sections + working days per year level |
@@ -275,6 +300,9 @@ python scripts/db/import_courses.py "C:\path\to\Courses.xlsx"
 
 # Start backend
 uvicorn backend.main:app --reload
+
+# Run workload allocation (example)
+curl -X POST http://127.0.0.1:8000/api/v1/allocations/run -H "Content-Type: application/json" -d "{\"batch_code\":\"2023-27\",\"semester_number\":5}"
 
 # Start frontend
 cd frontend && npm run dev

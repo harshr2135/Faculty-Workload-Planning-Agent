@@ -38,6 +38,10 @@ class Department(Base, TimestampMixin):
         back_populates="department",
         cascade="all, delete-orphan",
     )
+    student_batches: Mapped[list["StudentBatch"]] = relationship(
+        back_populates="department",
+        cascade="all, delete-orphan",
+    )
     time_slots: Mapped[list["TimeSlot"]] = relationship(
         back_populates="department",
         cascade="all, delete-orphan",

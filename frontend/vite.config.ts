@@ -15,6 +15,8 @@ export default defineConfig({
       "/api": {
         target: "http://127.0.0.1:8000",
         changeOrigin: true,
+        // CP-SAT allocation can run several minutes; keep above max_time_seconds budget.
+        timeout: 900_000,
       },
     },
   },

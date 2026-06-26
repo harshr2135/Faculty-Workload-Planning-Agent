@@ -11,7 +11,9 @@ from backend.models import (
     Course,
     Department,
     Laboratory,
+    LectureHall,
     Semester,
+    StudentBatch,
 )
 
 
@@ -20,6 +22,7 @@ class CourseService:
         self,
         session: AsyncSession,
         semester_number: int | None = None,
+        batch_code: str | None = None,
     ) -> list[Course]:
         query = (
             select(Course)
@@ -27,14 +30,34 @@ class CourseService:
             .where(Department.name == DEPARTMENT_NAME)
             .options(
                 selectinload(Course.semester).selectinload(Semester.academic_year_level),
+                selectinload(Course.batch),
             )
-            .order_by(Course.course_code)
+            .order_by(Course.batch_id, Course.course_code)
         )
         if semester_number is not None:
-            query = query.join(Semester).where(Semester.semester_number == semester_number)
+            query = query.where(
+                Course.semester_id.in_(
+                    select(Semester.id).where(Semester.semester_number == semester_number)
+                )
+            )
+        if batch_code is not None:
+            query = query.where(
+                Course.batch_id.in_(
+                    select(StudentBatch.id).where(StudentBatch.batch_code == batch_code)
+                )
+            )
 
         result = await session.execute(query)
         return list(result.scalars().unique().all())
+
+    async def list_student_batches(self, session: AsyncSession) -> list[StudentBatch]:
+        result = await session.execute(
+            select(StudentBatch)
+            .join(Department)
+            .where(Department.name == DEPARTMENT_NAME)
+            .order_by(StudentBatch.batch_code)
+        )
+        return list(result.scalars().all())
 
     async def list_classrooms(self, session: AsyncSession) -> list[Classroom]:
         result = await session.execute(
@@ -52,6 +75,10 @@ class CourseService:
             .where(Department.name == DEPARTMENT_NAME)
             .order_by(Laboratory.room_number)
         )
+        return list(result.scalars().all())
+
+    async def list_lecture_halls(self, session: AsyncSession) -> list[LectureHall]:
+        result = await session.execute(select(LectureHall).order_by(LectureHall.name))
         return list(result.scalars().all())
 
     async def list_semesters(self, session: AsyncSession) -> list[Semester]:

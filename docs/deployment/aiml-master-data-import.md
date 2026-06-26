@@ -20,19 +20,38 @@ Rooms allocated to AIML: **508, 509, 510**
 
 | Excel column | DB field | Meaning |
 |--------------|----------|---------|
+| *(first column)* | `batch_code` | Student cohort, e.g. `2023-27` |
 | Semester | `semester_number` | 3–7 for AIML |
+| Course Type | `course_type` | IPCC, PCC, PEC, SEC, BSC, HSMC |
 | Subject | `name` | Course title |
-| Course Code | `course_code` | Unique code |
+| Course Code | `course_code` | Unique per batch |
 | Credits | `credits` | Credit value |
-| Number of lectures per week | `lectures_per_week` | Classroom hours/week (spread across working days) |
-| Practical | `practical_hours` | **Continuous** lab block duration (0 = no lab) |
+| Number of lectures per week | `lectures_per_week` | Classroom hours/week |
+| Practical | `practical_hours` | Continuous lab block (0 = no lab) |
+
+### Student batches (updated catalog)
+
+Three cohorts in the file: **2022-26**, **2023-27**, **2024-28** — 81 course rows total across sem 3–7.
+
+### Lecture halls (college-wide)
+
+Six halls: **LH-1 … LH-6**. Each accommodates **2–3 sections combined** from the same batch.
+
+| Course type | Venue | Scheduling |
+|-------------|-------|--------------|
+| **PEC**, **SEC** | Lecture hall | 2–3 sections of the same batch combined for one session |
+| IPCC, PCC, BSC, HSMC | Department classroom | One section per room slot (default) |
+
+IPCC courses may still have practical hours (lab in department laboratories).
 
 ## CLI — seed + import (recommended)
 
 ```powershell
-# Seeds classrooms, labs, semesters, year rules, then imports courses
-python scripts/db/import_courses.py "C:\Users\Jyothi\Downloads\Courses.xlsx"
+# Seeds classrooms, labs, lecture halls, batches, semesters, then imports courses
+python scripts/db/import_courses.py "C:\Users\Jyothi\Downloads\Courses.xlsx" --replace
 ```
+
+Use `--replace` when uploading a new catalog to remove old course rows first.
 
 Seed only (no courses):
 
@@ -48,7 +67,9 @@ After `uvicorn backend.main:app --reload`:
 |--------|----------|---------|
 | POST | `/api/v1/department/seed-aiml` | Seed rooms + semester structure |
 | POST | `/api/v1/courses/import` | Upload `Courses.xlsx` |
-| GET | `/api/v1/courses` | List courses (`?semester=5` optional) |
+| GET | `/api/v1/courses` | List courses (`?semester=5&batch=2023-27`) |
+| GET | `/api/v1/student-batches` | List student cohorts |
+| GET | `/api/v1/lecture-halls` | List college lecture halls |
 | GET | `/api/v1/classrooms` | List classrooms |
 | GET | `/api/v1/laboratories` | List laboratories |
 | GET | `/api/v1/semesters` | List semesters with year rules |
@@ -56,6 +77,5 @@ After `uvicorn backend.main:app --reload`:
 
 ## Planning notes (for future optimizer)
 
-- `lectures_per_week` can be split across the year’s `working_days` (e.g. 3 hrs over 5 days for 2nd year).
-- `practical_hours` must be scheduled as one **continuous** block in a laboratory.
-- Section counts multiply workload: each course runs once per section per semester.
+- **PEC / SEC** → college lecture hall; optimizer groups **2–3 sections** of the same batch per session.
+- **IPCC / PCC / BSC / HSMC** → department classrooms (424, 431, …).

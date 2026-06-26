@@ -7,15 +7,17 @@ from io import BytesIO
 from pathlib import Path
 
 import openpyxl
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.core.domain.aiml_config import DEPARTMENT_NAME, SEMESTER_TO_YEAR_LEVEL
-from backend.models import Course, Department, Semester
+from backend.core.domain.course_type_config import validate_course_type
+from backend.models import Course, Department, Semester, StudentBatch
 from backend.schemas.course import CourseImportResult
 
 EXPECTED_HEADERS = {
     "semester": "semester_number",
+    "course type": "course_type",
     "subject": "name",
     "course code": "course_code",
     "credits": "credits",
@@ -26,7 +28,9 @@ EXPECTED_HEADERS = {
 
 @dataclass
 class CourseRow:
+    batch_code: str
     semester_number: int
+    course_type: str
     name: str
     course_code: str
     credits: int
@@ -56,6 +60,15 @@ def _to_int(value: object, field: str, row_number: int) -> int:
     return int(value)
 
 
+def _normalize_batch_code(value: object) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if isinstance(value, float):
+        text = str(int(value))
+    return text
+
+
 def parse_courses_workbook(source: Path | BytesIO) -> tuple[list[CourseRow], list[str]]:
     workbook = openpyxl.load_workbook(source, read_only=True, data_only=True)
     worksheet = workbook.active
@@ -63,7 +76,9 @@ def parse_courses_workbook(source: Path | BytesIO) -> tuple[list[CourseRow], lis
     errors: list[str] = []
 
     header_row = None
+    header_row_index = 0
     for row in rows_iter:
+        header_row_index += 1
         if row and any(
             _normalize_header(cell) in EXPECTED_HEADERS for cell in row if cell is not None
         ):
@@ -80,8 +95,14 @@ def parse_courses_workbook(source: Path | BytesIO) -> tuple[list[CourseRow], lis
         workbook.close()
         raise ValueError(f"Missing required columns: {', '.join(missing)}")
 
+    semester_columns = [
+        index for index, field in header_map.items() if field == "semester_number"
+    ]
+    batch_column_index = semester_columns[0] - 1 if semester_columns and semester_columns[0] > 0 else 0
+
     parsed_rows: list[CourseRow] = []
-    row_number = 0
+    row_number = header_row_index
+    current_batch = ""
     for row in rows_iter:
         row_number += 1
         if not any(cell is not None and str(cell).strip() for cell in row):
@@ -90,6 +111,16 @@ def parse_courses_workbook(source: Path | BytesIO) -> tuple[list[CourseRow], lis
         values: dict[str, object] = {}
         for index, field_name in header_map.items():
             values[field_name] = row[index] if index < len(row) else None
+
+        batch_raw = row[batch_column_index] if batch_column_index < len(row) else None
+        batch_code = _normalize_batch_code(batch_raw)
+        if batch_code:
+            current_batch = batch_code
+        elif current_batch:
+            batch_code = current_batch
+        else:
+            errors.append(f"Row {row_number}: missing student batch.")
+            continue
 
         semester_raw = values.get("semester_number")
         if semester_raw is None:
@@ -104,8 +135,9 @@ def parse_courses_workbook(source: Path | BytesIO) -> tuple[list[CourseRow], lis
             practical_hours = _to_int(
                 values.get("practical_hours"), "practical hours", row_number
             )
+            course_type = validate_course_type(str(values.get("course_type") or ""))
         except ValueError as exc:
-            errors.append(str(exc))
+            errors.append(str(exc) if str(exc).startswith("Row") else f"Row {row_number}: {exc}")
             continue
 
         name = str(values.get("name") or "").strip()
@@ -122,7 +154,9 @@ def parse_courses_workbook(source: Path | BytesIO) -> tuple[list[CourseRow], lis
 
         parsed_rows.append(
             CourseRow(
+                batch_code=batch_code,
                 semester_number=semester_number,
+                course_type=course_type,
                 name=name,
                 course_code=course_code,
                 credits=credits,
@@ -136,11 +170,31 @@ def parse_courses_workbook(source: Path | BytesIO) -> tuple[list[CourseRow], lis
 
 
 class CourseImportService:
+    async def _get_or_create_batch(
+        self,
+        session: AsyncSession,
+        department_id: int,
+        batch_code: str,
+    ) -> StudentBatch:
+        result = await session.execute(
+            select(StudentBatch).where(
+                StudentBatch.department_id == department_id,
+                StudentBatch.batch_code == batch_code,
+            )
+        )
+        batch = result.scalar_one_or_none()
+        if batch is None:
+            batch = StudentBatch(department_id=department_id, batch_code=batch_code)
+            session.add(batch)
+            await session.flush()
+        return batch
+
     async def import_from_excel(
         self,
         session: AsyncSession,
         source: Path | BytesIO,
         department_name: str = DEPARTMENT_NAME,
+        replace_catalog: bool = False,
     ) -> CourseImportResult:
         rows, parse_errors = parse_courses_workbook(source)
         created = 0
@@ -155,7 +209,19 @@ class CourseImportService:
                 f"Department '{department_name}' not found. Run seed_aiml_master_data first."
             )
 
+        if replace_catalog:
+            await session.execute(delete(Course).where(Course.department_id == department.id))
+
+        batch_cache: dict[str, StudentBatch] = {}
         for row in rows:
+            if row.batch_code not in batch_cache:
+                batch_cache[row.batch_code] = await self._get_or_create_batch(
+                    session,
+                    department.id,
+                    row.batch_code,
+                )
+            batch = batch_cache[row.batch_code]
+
             sem_result = await session.execute(
                 select(Semester).where(
                     Semester.department_id == department.id,
@@ -173,6 +239,7 @@ class CourseImportService:
                 select(Course).where(
                     Course.department_id == department.id,
                     Course.course_code == row.course_code,
+                    (Course.batch_id == batch.id) | (Course.batch_id.is_(None)),
                 )
             )
             course = course_result.scalar_one_or_none()
@@ -180,7 +247,9 @@ class CourseImportService:
             if course is None:
                 course = Course(
                     department_id=department.id,
+                    batch_id=batch.id,
                     semester_id=semester.id,
+                    course_type=row.course_type,
                     name=row.name,
                     course_code=row.course_code,
                     credits=row.credits,
@@ -190,7 +259,9 @@ class CourseImportService:
                 session.add(course)
                 created += 1
             else:
+                course.batch_id = batch.id
                 course.semester_id = semester.id
+                course.course_type = row.course_type
                 course.name = row.name
                 course.credits = row.credits
                 course.lectures_per_week = row.lectures_per_week

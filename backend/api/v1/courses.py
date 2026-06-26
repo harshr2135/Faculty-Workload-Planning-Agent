@@ -5,6 +5,7 @@ from io import BytesIO
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.core.domain.batch_planning import default_planning_semester
 from backend.database.session import get_db_session
 from backend.schemas.course import (
     AcademicYearLevelRead,
@@ -12,7 +13,9 @@ from backend.schemas.course import (
     CourseImportResult,
     CourseRead,
     LaboratoryRead,
+    LectureHallRead,
     SemesterRead,
+    StudentBatchRead,
 )
 from backend.schemas.specialization_match import CourseSpecializationMatchRead, MatchedFacultyRead
 from backend.services.course_import_service import CourseImportService
@@ -26,6 +29,7 @@ router = APIRouter(tags=["courses"])
 @router.post("/courses/import", response_model=CourseImportResult)
 async def import_courses_excel(
     file: UploadFile = File(...),
+    replace: bool = Query(default=False, description="Replace entire course catalog before import"),
     session: AsyncSession = Depends(get_db_session),
 ) -> CourseImportResult:
     if not file.filename or not file.filename.lower().endswith(".xlsx"):
@@ -36,7 +40,11 @@ async def import_courses_excel(
     try:
         content = await file.read()
         service = CourseImportService()
-        return await service.import_from_excel(session, source=BytesIO(content))
+        return await service.import_from_excel(
+            session,
+            source=BytesIO(content),
+            replace_catalog=replace,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
@@ -44,15 +52,22 @@ async def import_courses_excel(
 @router.get("/courses", response_model=list[CourseRead])
 async def list_courses(
     semester: int | None = Query(default=None, ge=1, le=12),
+    batch: str | None = Query(default=None, description="Student batch code, e.g. 2023-27"),
     session: AsyncSession = Depends(get_db_session),
 ) -> list[CourseRead]:
     service = CourseService()
-    courses = await service.list_courses(session, semester_number=semester)
+    courses = await service.list_courses(
+        session,
+        semester_number=semester,
+        batch_code=batch,
+    )
     return [
         CourseRead(
             id=course.id,
             course_code=course.course_code,
             name=course.name,
+            batch_code=course.batch.batch_code if course.batch else "",
+            course_type=course.course_type or "",
             credits=course.credits,
             semester_number=course.semester.semester_number,
             year_level=course.semester.academic_year_level.year_level,
@@ -61,6 +76,7 @@ async def list_courses(
             lectures_per_week=course.lectures_per_week,
             practical_hours=course.practical_hours,
             has_lab=course.has_lab,
+            requires_lecture_hall=course.requires_lecture_hall,
         )
         for course in courses
     ]
@@ -72,11 +88,16 @@ async def list_courses(
 )
 async def list_course_specialization_matches(
     semester: int | None = Query(default=None, ge=1, le=12),
+    batch: str | None = Query(default=None, description="Student batch code, e.g. 2023-27"),
     session: AsyncSession = Depends(get_db_session),
 ) -> list[CourseSpecializationMatchRead]:
     """Preview inferred course keywords and faculty with similar specializations."""
     service = SpecializationMatchService()
-    matches = await service.get_course_matches(session, semester_number=semester)
+    matches = await service.get_course_matches(
+        session,
+        semester_number=semester,
+        batch_code=batch,
+    )
     return [
         CourseSpecializationMatchRead(
             course_id=m.course_id,
@@ -87,6 +108,30 @@ async def list_course_specialization_matches(
             fallback_required=m.fallback_required,
         )
         for m in matches
+    ]
+
+
+@router.get("/lecture-halls", response_model=list[LectureHallRead])
+async def list_lecture_halls(
+    session: AsyncSession = Depends(get_db_session),
+) -> list[LectureHallRead]:
+    service = CourseService()
+    return await service.list_lecture_halls(session)
+
+
+@router.get("/student-batches", response_model=list[StudentBatchRead])
+async def list_student_batches(
+    session: AsyncSession = Depends(get_db_session),
+) -> list[StudentBatchRead]:
+    service = CourseService()
+    batches = await service.list_student_batches(session)
+    return [
+        StudentBatchRead(
+            id=batch.id,
+            batch_code=batch.batch_code,
+            default_planning_semester=default_planning_semester(batch.batch_code),
+        )
+        for batch in batches
     ]
 
 
@@ -137,6 +182,6 @@ async def list_academic_year_levels(
 async def seed_aiml_department(
     session: AsyncSession = Depends(get_db_session),
 ) -> dict[str, int]:
-    """Seed AIML classrooms, laboratories, semesters, and year-level rules."""
+    """Seed AIML classrooms, laboratories, lecture halls, batches, and year-level rules."""
     service = DepartmentSeedService()
     return await service.seed_aiml_resources(session)

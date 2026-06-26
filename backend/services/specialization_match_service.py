@@ -11,7 +11,7 @@ from backend.core.domain.specialization_matcher import (
     infer_course_keywords,
     specialization_matches_course,
 )
-from backend.models import Course, Department, FacultyMember
+from backend.models import Course, Department, FacultyMember, Semester, StudentBatch
 
 
 class SpecializationMatchService:
@@ -19,18 +19,27 @@ class SpecializationMatchService:
         self,
         session: AsyncSession,
         semester_number: int | None = None,
+        batch_code: str | None = None,
     ) -> list[CourseFacultyMatch]:
         query = (
             select(Course)
             .join(Department)
             .where(Department.name == DEPARTMENT_NAME)
-            .options(selectinload(Course.semester))
-            .order_by(Course.course_code)
+            .options(selectinload(Course.semester), selectinload(Course.batch))
+            .order_by(Course.batch_id, Course.course_code)
         )
         if semester_number is not None:
-            from backend.models import Semester
-
-            query = query.join(Semester).where(Semester.semester_number == semester_number)
+            query = query.where(
+                Course.semester_id.in_(
+                    select(Semester.id).where(Semester.semester_number == semester_number)
+                )
+            )
+        if batch_code is not None:
+            query = query.where(
+                Course.batch_id.in_(
+                    select(StudentBatch.id).where(StudentBatch.batch_code == batch_code)
+                )
+            )
 
         course_result = await session.execute(query)
         courses = list(course_result.scalars().unique().all())

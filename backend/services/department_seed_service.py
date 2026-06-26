@@ -11,8 +11,12 @@ from backend.core.domain.aiml_config import (
     CLASSROOM_NUMBERS,
     DEPARTMENT_NAME,
     LABORATORY_NUMBERS,
+    LECTURE_HALL_MAX_COMBINED_SECTIONS,
+    LECTURE_HALL_MIN_COMBINED_SECTIONS,
+    LECTURE_HALL_NAMES,
+    STUDENT_BATCH_CODES,
 )
-from backend.models import AcademicYearLevel, Classroom, Department, Laboratory, Semester
+from backend.models import AcademicYearLevel, Classroom, Department, Laboratory, LectureHall, Semester, StudentBatch
 
 
 async def _get_or_create_department(session: AsyncSession, name: str) -> Department:
@@ -31,6 +35,8 @@ class DepartmentSeedService:
 
         classrooms_created = await self._seed_classrooms(session, department.id)
         laboratories_created = await self._seed_laboratories(session, department.id)
+        lecture_halls_created = await self._seed_lecture_halls(session)
+        batches_created = await self._seed_student_batches(session, department.id)
         year_levels_created, semesters_created = await self._seed_academic_structure(
             session, department.id
         )
@@ -45,6 +51,8 @@ class DepartmentSeedService:
         return {
             "classrooms_created": classrooms_created,
             "laboratories_created": laboratories_created,
+            "lecture_halls_created": lecture_halls_created,
+            "student_batches_created": batches_created,
             "year_levels_created": year_levels_created,
             "semesters_created": semesters_created,
             "timetable_slots_created": timetable_created,
@@ -78,6 +86,51 @@ class DepartmentSeedService:
             )
             if exists is None:
                 session.add(Laboratory(department_id=department_id, room_number=room_number))
+                created += 1
+        await session.flush()
+        return created
+
+    async def _seed_lecture_halls(self, session: AsyncSession) -> int:
+        created = 0
+        legacy_halls = await session.execute(
+            select(LectureHall).where(LectureHall.name.like("LH-%"))
+        )
+        for row in legacy_halls.scalars():
+            suffix = row.name.removeprefix("LH-")
+            if suffix.isdigit():
+                row.name = f"LH{suffix}"
+        await session.flush()
+
+        for name in LECTURE_HALL_NAMES:
+            exists = await session.scalar(select(LectureHall.id).where(LectureHall.name == name))
+            if exists is None:
+                session.add(
+                    LectureHall(
+                        name=name,
+                        min_combined_sections=LECTURE_HALL_MIN_COMBINED_SECTIONS,
+                        max_combined_sections=LECTURE_HALL_MAX_COMBINED_SECTIONS,
+                    )
+                )
+                created += 1
+            else:
+                row = await session.get(LectureHall, exists)
+                if row is not None:
+                    row.min_combined_sections = LECTURE_HALL_MIN_COMBINED_SECTIONS
+                    row.max_combined_sections = LECTURE_HALL_MAX_COMBINED_SECTIONS
+        await session.flush()
+        return created
+
+    async def _seed_student_batches(self, session: AsyncSession, department_id: int) -> int:
+        created = 0
+        for batch_code in STUDENT_BATCH_CODES:
+            exists = await session.scalar(
+                select(StudentBatch.id).where(
+                    StudentBatch.department_id == department_id,
+                    StudentBatch.batch_code == batch_code,
+                )
+            )
+            if exists is None:
+                session.add(StudentBatch(department_id=department_id, batch_code=batch_code))
                 created += 1
         await session.flush()
         return created

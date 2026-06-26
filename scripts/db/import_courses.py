@@ -16,7 +16,7 @@ from backend.services.course_import_service import CourseImportService  # noqa: 
 from backend.services.department_seed_service import DepartmentSeedService  # noqa: E402
 
 
-async def run_import(file_path: Path, seed_first: bool) -> None:
+async def run_import(file_path: Path, seed_first: bool, replace_catalog: bool) -> None:
     if not file_path.exists():
         raise FileNotFoundError(f"Excel file not found: {file_path}")
     if file_path.suffix.lower() != ".xlsx":
@@ -31,7 +31,11 @@ async def run_import(file_path: Path, seed_first: bool) -> None:
             await seed_service.seed_aiml_resources(session)
 
         import_service = CourseImportService()
-        result = await import_service.import_from_excel(session, source=file_path)
+        result = await import_service.import_from_excel(
+            session,
+            source=file_path,
+            replace_catalog=replace_catalog,
+        )
         await session.commit()
 
     print("Course import completed.")
@@ -52,8 +56,13 @@ def main() -> None:
         action="store_true",
         help="Skip seeding classrooms/labs/semesters before import",
     )
+    parser.add_argument(
+        "--replace",
+        action="store_true",
+        help="Delete existing department courses before import",
+    )
     args = parser.parse_args()
-    asyncio.run(run_import(args.file, seed_first=not args.no_seed))
+    asyncio.run(run_import(args.file, seed_first=not args.no_seed, replace_catalog=args.replace))
 
 
 if __name__ == "__main__":

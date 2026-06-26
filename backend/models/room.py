@@ -50,3 +50,15 @@ class Laboratory(Base, TimestampMixin):
     capacity: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     department: Mapped["Department"] = relationship(back_populates="laboratories")
+
+
+class LectureHall(Base, TimestampMixin):
+    """College-wide hall for combined-section PEC/SEC delivery."""
+
+    __tablename__ = "lecture_halls"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(50), unique=True, nullable=False)
+    min_combined_sections: Mapped[int] = mapped_column(Integer, nullable=False, default=2)
+    max_combined_sections: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
+    capacity: Mapped[int | None] = mapped_column(Integer, nullable=True)

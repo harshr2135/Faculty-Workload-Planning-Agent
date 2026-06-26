@@ -1,5 +1,5 @@
 import { apiGet } from "./client";
-import type { Classroom, Laboratory } from "@/types/api";
+import type { Classroom, Laboratory, LectureHall } from "@/types/api";
 
 export function fetchClassrooms(): Promise<Classroom[]> {
   return apiGet<Classroom[]>("/classrooms");
@@ -7,4 +7,8 @@ export function fetchClassrooms(): Promise<Classroom[]> {
 
 export function fetchLaboratories(): Promise<Laboratory[]> {
   return apiGet<Laboratory[]>("/laboratories");
+}
+
+export function fetchLectureHalls(): Promise<LectureHall[]> {
+  return apiGet<LectureHall[]>("/lecture-halls");
 }

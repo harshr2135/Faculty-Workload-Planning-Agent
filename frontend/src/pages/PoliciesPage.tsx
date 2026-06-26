@@ -31,10 +31,8 @@ export default function PoliciesPage() {
             <DataTable>
               <DataTableHead>
                 <DataTableHeaderCell>Designation</DataTableHeaderCell>
-                <DataTableHeaderCell>Min theory</DataTableHeaderCell>
-                <DataTableHeaderCell>Min lab</DataTableHeaderCell>
-                <DataTableHeaderCell>Weekly hours</DataTableHeaderCell>
-                <DataTableHeaderCell>Lab sessions</DataTableHeaderCell>
+                <DataTableHeaderCell>Max weekly hours</DataTableHeaderCell>
+                <DataTableHeaderCell>Max lab sessions</DataTableHeaderCell>
               </DataTableHead>
               <DataTableBody>
                 {data.designation_policies.map((policy) => (
@@ -42,15 +40,9 @@ export default function PoliciesPage() {
                     <DataTableCell className="font-medium text-slate-900">
                       {policy.designation_label}
                     </DataTableCell>
-                    <DataTableCell>{policy.min_theory_courses}</DataTableCell>
-                    <DataTableCell>{policy.min_lab_courses}</DataTableCell>
+                    <DataTableCell>{policy.max_weekly_hours}</DataTableCell>
                     <DataTableCell>
-                      {policy.min_weekly_hours}–{policy.max_weekly_hours}
-                    </DataTableCell>
-                    <DataTableCell>
-                      {policy.min_lab_sessions != null && policy.max_lab_sessions != null
-                        ? `${policy.min_lab_sessions}–${policy.max_lab_sessions}`
-                        : "—"}
+                      {policy.max_lab_sessions != null ? policy.max_lab_sessions : "—"}
                     </DataTableCell>
                   </tr>
                 ))}

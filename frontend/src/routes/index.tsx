@@ -7,6 +7,7 @@ import ClassroomsPage from "@/pages/ClassroomsPage";
 import LaboratoriesPage from "@/pages/LaboratoriesPage";
 import TimetablePage from "@/pages/TimetablePage";
 import PoliciesPage from "@/pages/PoliciesPage";
+import AllocationsPage from "@/pages/AllocationsPage";
 
 export function AppRoutes() {
   return (
@@ -20,6 +21,7 @@ export function AppRoutes() {
           <Route path="laboratories" element={<LaboratoriesPage />} />
           <Route path="timetable" element={<TimetablePage />} />
           <Route path="policies" element={<PoliciesPage />} />
+          <Route path="allocations" element={<AllocationsPage />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Route>
       </Routes>

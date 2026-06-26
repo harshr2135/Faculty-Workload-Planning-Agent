@@ -5,9 +5,10 @@ const navItems = [
   { to: "/", label: "Dashboard", end: true },
   { to: "/faculty", label: "Faculty" },
   { to: "/courses", label: "Courses" },
-  { to: "/classrooms", label: "Classrooms" },
+  { to: "/classrooms", label: "Rooms" },
   { to: "/laboratories", label: "Laboratories" },
   { to: "/timetable", label: "Timetable" },
+  { to: "/allocations", label: "Allocation" },
   { to: "/policies", label: "Policies" },
 ];
 

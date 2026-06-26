@@ -39,9 +39,22 @@ Preview API: `GET /api/v1/courses/specialization-matches`
 
 Once the weekly grid is solved, the same assignment repeats every week of the semester (`timetable_fixed_for_semester` policy). The optimizer assigns `(section, day, slot, room)` tuples once per semester, not per week.
 
+**Slice 2 implementation:** `TimetableCpsatSolver` runs after workload assignment. Each theory hour and each continuous lab block becomes a `ScheduleEvent` placed on `(day, period_block, room)` with conflict checks for faculty, rooms, and sections.
+
+Modules:
+- `optimization/preprocessing/schedule_event_builder.py`
+- `optimization/preprocessing/period_utils.py` (continuous blocks respect break/lunch)
+- `optimization/engine/timetable_cpsat_solver.py`
+
 ## Laboratory assignments
 
 Each lab session variable must have exactly **two** faculty assignees. Continuous block duration comes from `courses.practical_hours`.
+
+## Lecture hall scheduling (PEC / SEC)
+
+- Six college lecture halls (`LH-1` … `LH-6`), each fitting **2–3 combined sections** from the same student batch.
+- Course types `PEC` and `SEC` use `requires_lecture_hall = true`; IPCC/PCC/BSC/HSMC use department classrooms.
+- Optimizer must assign section groups to a single LH slot (not split across rooms).
 
 ## Output Contract
 
