@@ -1,0 +1,18 @@
+# Production overrides
+
+app:
+  debug: false
+
+logging:
+  level: INFO
+  format: json
+
+database:
+  echo: false
+
+ai:
+  enabled: true
+  temperature: 0.1
+
+notifications:
+  email_enabled: true

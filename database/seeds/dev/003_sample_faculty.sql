@@ -1,0 +1,2 @@
+-- Placeholder: development seed data for faculty members
+-- Will be populated during database schema implementation

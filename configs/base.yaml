@@ -1,0 +1,30 @@
+# Base configuration — overridden by environment-specific files and env vars
+
+app:
+  name: Faculty Workload Planning Agent
+  api_prefix: /api/v1
+
+database:
+  pool_size: 10
+  echo: false
+
+optimization:
+  default_timeout_seconds: 120
+  max_workers: 4
+  fairness_weight: 0.4
+  preference_weight: 0.3
+  balance_weight: 0.3
+
+ai:
+  enabled: true
+  max_tokens: 2048
+  temperature: 0.2
+
+notifications:
+  email_enabled: false
+  in_app_enabled: true
+
+features:
+  approval_workflow: true
+  analytics_dashboard: true
+  rag_policy_search: false

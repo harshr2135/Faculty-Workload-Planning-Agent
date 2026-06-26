@@ -1,0 +1,20 @@
+# LLM provider routing — API keys supplied via environment variables
+
+default_provider: nim
+
+providers:
+  nim:
+    model: meta/llama-3.1-70b-instruct
+    base_url_env: FWP_NIM_BASE_URL
+    api_key_env: FWP_NIM_API_KEY
+
+  openai:
+    model: gpt-4o-mini
+    api_key_env: FWP_OPENAI_API_KEY
+
+  groq:
+    model: llama-3.3-70b-versatile
+    api_key_env: FWP_GROQ_API_KEY
+
+rate_limit:
+  requests_per_minute: 30

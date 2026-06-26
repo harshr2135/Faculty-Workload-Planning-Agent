@@ -1,0 +1,14 @@
+# Development overrides (loaded after base.yaml)
+
+app:
+  debug: true
+
+database:
+  echo: true
+
+logging:
+  level: DEBUG
+  format: console
+
+ai:
+  enabled: true

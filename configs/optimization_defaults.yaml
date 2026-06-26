@@ -1,0 +1,25 @@
+# Default solver and fairness configuration (business policies live in database)
+
+solver:
+  engine: cpsat
+  timeout_seconds: 120
+  num_workers: 4
+  log_search_progress: false
+
+objectives:
+  # Weights must sum to 1.0 for weighted-sum strategy
+  fairness: 0.40
+  preference_satisfaction: 0.30
+  workload_balance: 0.30
+
+constraints:
+  enforce_aicte_rules: true
+  enforce_timetable_conflicts: true
+  enforce_specialization_match: true
+  enforce_max_teaching_hours: true
+  enforce_lab_limits: true
+  enforce_leave_availability: true
+
+strategies:
+  default: standard_allocation
+  emergency_substitution_timeout_seconds: 60

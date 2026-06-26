@@ -1,0 +1,28 @@
+version: 1
+disable_existing_loggers: false
+
+formatters:
+  json:
+    class: backend.logging.formatters.JsonFormatter
+  console:
+    format: "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"
+
+handlers:
+  console:
+    class: logging.StreamHandler
+    formatter: console
+    stream: ext://sys.stdout
+
+loggers:
+  backend:
+    level: INFO
+    handlers: [console]
+    propagate: false
+  uvicorn:
+    level: INFO
+    handlers: [console]
+    propagate: false
+
+root:
+  level: INFO
+  handlers: [console]

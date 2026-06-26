@@ -1,0 +1,11 @@
+# Staging overrides
+
+app:
+  debug: false
+
+logging:
+  level: INFO
+  format: json
+
+ai:
+  enabled: true
