@@ -1,4 +1,4 @@
-"""CP-SAT weekly timetable grid solver (Slice 2)."""
+"""Two-phase weekly timetable solver: CP-SAT time slots, then greedy rooms."""
 
 from __future__ import annotations
 
@@ -6,24 +6,23 @@ from dataclasses import dataclass
 
 from ortools.sat.python import cp_model
 
+from backend.optimization.engine.room_assigner import TimeSlotAssignment, assign_rooms_greedy
+from backend.optimization.engine.solver_tuning import apply_cpsat_performance
 from backend.optimization.models.solution import SolverStatus
 from backend.optimization.models.timetable_problem import (
     PeriodInfo,
-    RoomInput,
     RoomKind,
     ScheduleEvent,
     TimetableProblem,
     TimetableSolverConfig,
 )
-from backend.optimization.models.timetable_solution import TimetableEntry, TimetableSolution
-from backend.optimization.preprocessing.period_utils import period_window_label
+from backend.optimization.models.timetable_solution import TimetableSolution
 
 
 @dataclass(frozen=True)
-class _Placement:
+class _TimeSlot:
     day: str
     period_block: tuple[int, ...]
-    room: RoomInput
 
 
 class TimetableCpsatSolver:
@@ -40,175 +39,263 @@ class TimetableCpsatSolver:
             )
 
         period_lookup = {info.period_number: info for info in problem.period_info}
-        placements_by_event: list[list[_Placement]] = []
+        slots_by_event: list[list[_TimeSlot]] = []
         for event in problem.events:
-            placements = _valid_placements(problem, event)
-            if not placements:
+            slots = _valid_time_slots(problem, event)
+            if not slots:
                 return TimetableSolution(
                     status=SolverStatus.INFEASIBLE,
                     messages=[
-                        f"No valid timetable placement for {event.course_code} "
-                        f"({event.event_id}); check rooms or lab duration."
+                        f"No valid time slot for {event.course_code} ({event.event_id}); "
+                        "check working days or lab duration."
                     ],
                 )
-            placements_by_event.append(placements)
+            slots_by_event.append(slots)
 
-        model = cp_model.CpModel()
-        choice_vars: list[list[cp_model.IntVar]] = []
-        for event_index, placements in enumerate(placements_by_event):
-            row = [
-                model.NewBoolVar(f"place_{event_index}_{placement_index}")
-                for placement_index in range(len(placements))
-            ]
-            model.Add(sum(row) == 1)
-            choice_vars.append(row)
-
-        # Resource conflicts grouped by day+period cell (faculty, room, sections).
-        cell_literals: dict[tuple[str, int], list[tuple[int, int]]] = {}
-        for event_index, placements in enumerate(placements_by_event):
-            for placement_index, placement in enumerate(placements):
-                for period_number in placement.period_block:
-                    cell_literals.setdefault((placement.day, period_number), []).append(
-                        (event_index, placement_index)
-                    )
-
-        for literals in cell_literals.values():
-            if len(literals) < 2:
-                continue
-            for left_pos in range(len(literals)):
-                left_event_index, left_placement_index = literals[left_pos]
-                left_event = problem.events[left_event_index]
-                left_placement = placements_by_event[left_event_index][left_placement_index]
-                for right_pos in range(left_pos + 1, len(literals)):
-                    right_event_index, right_placement_index = literals[right_pos]
-                    right_event = problem.events[right_event_index]
-                    right_placement = placements_by_event[right_event_index][right_placement_index]
-                    if not _placements_conflict(
-                        left_event,
-                        left_placement,
-                        right_event,
-                        right_placement,
-                    ):
-                        continue
-                    model.Add(
-                        choice_vars[left_event_index][left_placement_index]
-                        + choice_vars[right_event_index][right_placement_index]
-                        <= 1
-                    )
-
-        # Spread weekly theory sessions across different working days when there are
-        # enough days; 4th-year (Thu–Fri only) courses with 3 lectures/week may share a day.
-        slot_to_event_indices: dict[str, list[int]] = {}
-        for index, event in enumerate(problem.events):
-            if event.kind == "theory" and event.duration_periods == 1:
-                slot_to_event_indices.setdefault(event.slot_id, []).append(index)
-
-        for indices in slot_to_event_indices.values():
-            if len(indices) <= 1:
-                continue
-            sample_event = problem.events[indices[0]]
-            working_day_count = len(sample_event.working_days or problem.working_days)
-            if len(indices) > working_day_count:
-                continue
-            day_literals: dict[str, list[tuple[int, int]]] = {}
-            for event_index in indices:
-                for placement_index, placement in enumerate(placements_by_event[event_index]):
-                    day_literals.setdefault(placement.day, []).append(
-                        (event_index, placement_index)
-                    )
-            for literals in day_literals.values():
-                if len(literals) <= 1:
-                    continue
-                model.Add(
-                    sum(choice_vars[event_index][placement_index] for event_index, placement_index in literals)
-                    <= 1
-                )
-
-        # Prefer earlier days/periods and lower-index rooms (deterministic tie-break).
-        objective_terms: list[cp_model.LinearExpr] = []
-        day_order = {day: index for index, day in enumerate(problem.working_days)}
-        for event_index, placements in enumerate(placements_by_event):
-            for placement_index, placement in enumerate(placements):
-                period_start = placement.period_block[0]
-                cost = day_order[placement.day] * 100 + period_start * 10 + placement.room.id
-                objective_terms.append(choice_vars[event_index][placement_index] * cost)
-        model.Minimize(sum(objective_terms))
-
-        solver = cp_model.CpSolver()
-        solver.parameters.max_time_in_seconds = config.max_time_seconds
-        status = solver.Solve(model)
-
-        if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+        time_result = self._solve_time_slots(problem, slots_by_event, config)
+        if time_result.status not in (SolverStatus.OPTIMAL, SolverStatus.FEASIBLE):
             return TimetableSolution(
-                status=_map_status(status),
+                status=time_result.status,
+                messages=time_result.messages
+                or ["Timetable times could not be scheduled without conflicts."],
+            )
+
+        room_entries = assign_rooms_greedy(problem, time_result.assignments, period_lookup)
+        if room_entries is None:
+            return TimetableSolution(
+                status=SolverStatus.INFEASIBLE,
                 messages=[
-                    "Timetable could not be scheduled without conflicts. "
-                    "Try fewer concurrent courses or additional rooms."
+                    "Time slots were found but rooms could not be assigned without overlap. "
+                    "Add more classrooms, laboratories, or lecture halls."
                 ],
             )
 
-        entries = _extract_entries(
-            problem.events,
-            problem.working_days,
-            placements_by_event,
-            choice_vars,
-            period_lookup,
-            solver,
-        )
         return TimetableSolution(
-            status=_map_status(status),
-            entries=entries,
-            messages=["Weekly grid fixed for the semester; same pattern repeats each week."],
+            status=SolverStatus.FEASIBLE if config.stop_after_first_solution else time_result.status,
+            entries=room_entries,
+            messages=[
+                "First feasible weekly timetable for all batches (time slots + room assignment)."
+                if config.stop_after_first_solution
+                else "Phase 1: weekly time slots scheduled. Phase 2: rooms assigned greedily."
+            ],
+        )
+
+    def _solve_time_slots(
+        self,
+        problem: TimetableProblem,
+        slots_by_event: list[list[_TimeSlot]],
+        config: TimetableSolverConfig,
+    ) -> _TimeSlotSolveResult:
+        model = cp_model.CpModel()
+        choice_vars: list[list[cp_model.IntVar]] = []
+        for event_index, slots in enumerate(slots_by_event):
+            row = [
+                model.NewBoolVar(f"time_{event_index}_{slot_index}")
+                for slot_index in range(len(slots))
+            ]
+            model.AddExactlyOne(row)
+            choice_vars.append(row)
+
+        _add_time_conflict_constraints(
+            model,
+            problem.events,
+            slots_by_event,
+            choice_vars,
+        )
+        _add_room_capacity_constraints(model, problem, slots_by_event, choice_vars)
+        _add_spread_constraints(model, problem, slots_by_event, choice_vars)
+
+        # No objective when we only need the first feasible timetable (faster search).
+        if not config.stop_after_first_solution:
+            objective_terms: list[cp_model.LinearExpr] = []
+            day_order = {day: index for index, day in enumerate(problem.working_days)}
+            for event_index, slots in enumerate(slots_by_event):
+                for slot_index, slot in enumerate(slots):
+                    cost = day_order[slot.day] * 100 + slot.period_block[0] * 10
+                    objective_terms.append(choice_vars[event_index][slot_index] * cost)
+            model.Minimize(sum(objective_terms))
+
+        solver = cp_model.CpSolver()
+        apply_cpsat_performance(
+            solver,
+            config.max_time_seconds,
+            stop_after_first_solution=config.stop_after_first_solution,
+            num_search_workers=config.num_search_workers,
+        )
+        status = solver.Solve(model)
+
+        if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+            return _TimeSlotSolveResult(
+                status=_map_status(status),
+                assignments=[],
+                messages=[
+                    "Timetable times could not be scheduled without conflicts. "
+                    "Try fewer concurrent courses or additional faculty."
+                ],
+            )
+
+        assignments: list[TimeSlotAssignment] = []
+        for event_index, slots in enumerate(slots_by_event):
+            for slot_index, slot in enumerate(slots):
+                if solver.Value(choice_vars[event_index][slot_index]) != 1:
+                    continue
+                assignments.append(
+                    TimeSlotAssignment(
+                        event_index=event_index,
+                        day=slot.day,
+                        period_block=slot.period_block,
+                    )
+                )
+                break
+
+        return _TimeSlotSolveResult(
+            status=(
+                SolverStatus.FEASIBLE
+                if config.stop_after_first_solution
+                else _map_status(status)
+            ),
+            assignments=assignments,
         )
 
 
-def _valid_placements(problem: TimetableProblem, event: ScheduleEvent) -> list[_Placement]:
+@dataclass
+class _TimeSlotSolveResult:
+    status: SolverStatus
+    assignments: list[TimeSlotAssignment]
+    messages: list[str] | None = None
+
+
+def _valid_time_slots(problem: TimetableProblem, event: ScheduleEvent) -> list[_TimeSlot]:
     blocks = problem.consecutive_blocks.get(event.duration_periods, ())
-    rooms = _rooms_for_kind(problem, event.room_kind)
-    if not blocks or not rooms:
+    if not blocks:
         return []
 
-    placements: list[_Placement] = []
+    period_lookup = {info.period_number: info for info in problem.period_info}
+    slots: list[_TimeSlot] = []
     days = event.working_days or problem.working_days
     for day in days:
         for block in blocks:
-            for room in rooms:
-                placements.append(_Placement(day=day, period_block=block, room=room))
-    return placements
+            if not all(period_number in period_lookup for period_number in block):
+                continue
+            slot = _TimeSlot(day=day, period_block=block)
+            if not _conflicts_with_fixed_time(event, slot, problem.fixed_placements):
+                slots.append(slot)
+    return slots
 
 
-def _rooms_for_kind(problem: TimetableProblem, kind: RoomKind) -> list[RoomInput]:
-    if kind == RoomKind.LECTURE_HALL:
-        return list(problem.lecture_halls)
-    if kind == RoomKind.LABORATORY:
-        return list(problem.laboratories)
-    return list(problem.classrooms)
-
-
-def _placements_conflict(
-    left_event: ScheduleEvent,
-    left: _Placement,
-    right_event: ScheduleEvent,
-    right: _Placement,
+def _conflicts_with_fixed_time(
+    event: ScheduleEvent,
+    slot: _TimeSlot,
+    fixed_placements: tuple,
 ) -> bool:
-    if not _placements_overlap(left, right):
-        return False
-    if left.room.id == right.room.id:
-        return True
-    if set(left_event.faculty_ids) & set(right_event.faculty_ids):
-        return True
-    if (
-        left_event.batch_code == right_event.batch_code
-        and set(left_event.section_indices) & set(right_event.section_indices)
-    ):
-        return True
+    for fixed in fixed_placements:
+        if slot.day != fixed.day:
+            continue
+        if not set(slot.period_block) & set(fixed.period_block):
+            continue
+        if set(event.faculty_ids) & set(fixed.faculty_ids):
+            return True
+        if (
+            event.batch_code == fixed.batch_code
+            and set(event.section_indices) & set(fixed.section_indices)
+        ):
+            return True
     return False
 
 
-def _placements_overlap(left: _Placement, right: _Placement) -> bool:
-    if left.day != right.day:
-        return False
-    return bool(set(left.period_block) & set(right.period_block))
+def _add_time_conflict_constraints(
+    model: cp_model.CpModel,
+    events: tuple[ScheduleEvent, ...],
+    slots_by_event: list[list[_TimeSlot]],
+    choice_vars: list[list[cp_model.IntVar]],
+) -> None:
+    """At most one event per faculty or section in each day+period cell."""
+    cell_literals: dict[tuple[str, int], list[tuple[int, int]]] = {}
+    for event_index, slots in enumerate(slots_by_event):
+        for slot_index, slot in enumerate(slots):
+            for period_number in slot.period_block:
+                cell_literals.setdefault((slot.day, period_number), []).append(
+                    (event_index, slot_index)
+                )
+
+    for (day, period_number), literals in cell_literals.items():
+        if len(literals) < 2:
+            continue
+
+        faculty_groups: dict[int, list[cp_model.IntVar]] = {}
+        section_groups: dict[tuple[str, int], list[cp_model.IntVar]] = {}
+        for event_index, slot_index in literals:
+            var = choice_vars[event_index][slot_index]
+            event = events[event_index]
+            for faculty_id in event.faculty_ids:
+                faculty_groups.setdefault(faculty_id, []).append(var)
+            for section_index in event.section_indices:
+                section_groups.setdefault((event.batch_code, section_index), []).append(var)
+
+        for group in faculty_groups.values():
+            if len(group) > 1:
+                model.AddAtMostOne(group)
+        for group in section_groups.values():
+            if len(group) > 1:
+                model.AddAtMostOne(group)
+
+
+def _add_room_capacity_constraints(
+    model: cp_model.CpModel,
+    problem: TimetableProblem,
+    slots_by_event: list[list[_TimeSlot]],
+    choice_vars: list[list[cp_model.IntVar]],
+) -> None:
+    """Ensure each day+period does not exceed available rooms of each kind."""
+    room_counts = {
+        RoomKind.CLASSROOM: len(problem.classrooms),
+        RoomKind.LECTURE_HALL: len(problem.lecture_halls),
+        RoomKind.LABORATORY: len(problem.laboratories),
+    }
+    cell_kind_literals: dict[tuple[str, int, RoomKind], list[cp_model.IntVar]] = {}
+    for event_index, slots in enumerate(slots_by_event):
+        event = problem.events[event_index]
+        for slot_index, slot in enumerate(slots):
+            var = choice_vars[event_index][slot_index]
+            for period_number in slot.period_block:
+                key = (slot.day, period_number, event.room_kind)
+                cell_kind_literals.setdefault(key, []).append(var)
+
+    for (day, period_number, room_kind), literals in cell_kind_literals.items():
+        capacity = room_counts.get(room_kind, 0)
+        if capacity <= 0:
+            for var in literals:
+                model.Add(var == 0)
+            continue
+        if len(literals) > capacity:
+            model.Add(sum(literals) <= capacity)
+
+
+def _add_spread_constraints(
+    model: cp_model.CpModel,
+    problem: TimetableProblem,
+    slots_by_event: list[list[_TimeSlot]],
+    choice_vars: list[list[cp_model.IntVar]],
+) -> None:
+    slot_to_event_indices: dict[str, list[int]] = {}
+    for index, event in enumerate(problem.events):
+        if event.kind == "theory" and event.duration_periods == 1:
+            slot_to_event_indices.setdefault(event.slot_id, []).append(index)
+
+    for indices in slot_to_event_indices.values():
+        if len(indices) <= 1:
+            continue
+        sample_event = problem.events[indices[0]]
+        working_day_count = len(sample_event.working_days or problem.working_days)
+        if len(indices) > working_day_count:
+            continue
+        day_literals: dict[str, list[cp_model.IntVar]] = {}
+        for event_index in indices:
+            for slot_index, slot in enumerate(slots_by_event[event_index]):
+                day_literals.setdefault(slot.day, []).append(choice_vars[event_index][slot_index])
+        for group in day_literals.values():
+            if len(group) > 1:
+                model.AddAtMostOne(group)
 
 
 def _map_status(status: int) -> SolverStatus:
@@ -221,47 +308,3 @@ def _map_status(status: int) -> SolverStatus:
     if status == cp_model.UNKNOWN:
         return SolverStatus.UNKNOWN
     return SolverStatus.TIMEOUT
-
-
-def _extract_entries(
-    events: tuple[ScheduleEvent, ...],
-    working_days: tuple[str, ...],
-    placements_by_event: list[list[_Placement]],
-    choice_vars: list[list[cp_model.IntVar]],
-    period_lookup: dict[int, PeriodInfo],
-    solver: cp_model.CpSolver,
-) -> list[TimetableEntry]:
-    entries: list[TimetableEntry] = []
-    for event_index, event in enumerate(events):
-        for placement_index, placement in enumerate(placements_by_event[event_index]):
-            if solver.Value(choice_vars[event_index][placement_index]) != 1:
-                continue
-            first = period_lookup[placement.period_block[0]]
-            last = period_lookup[placement.period_block[-1]]
-            entries.append(
-                TimetableEntry(
-                    event_id=event.event_id,
-                    slot_id=event.slot_id,
-                    batch_code=event.batch_code,
-                    course_code=event.course_code,
-                    course_name=event.course_name,
-                    course_type=event.course_type,
-                    kind=event.kind,
-                    section_indices=list(event.section_indices),
-                    faculty_ids=list(event.faculty_ids),
-                    faculty_names=list(event.faculty_names),
-                    day=placement.day,
-                    period_numbers=list(placement.period_block),
-                    period_label=period_window_label(placement.period_block),
-                    room_type=placement.room.kind.value,
-                    room_name=placement.room.name,
-                    start_time=first.start_time,
-                    end_time=last.end_time,
-                )
-            )
-            break
-    day_order = {day: index for index, day in enumerate(working_days)}
-    entries.sort(
-        key=lambda row: (day_order.get(row.day, 99), row.period_numbers[0], row.course_code)
-    )
-    return entries

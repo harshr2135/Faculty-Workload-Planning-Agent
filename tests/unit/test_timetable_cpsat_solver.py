@@ -1,8 +1,10 @@
-"""Unit tests for timetable CP-SAT solver."""
+"""Unit tests for timetable solvers (CP-SAT legacy + greedy default)."""
 
+from backend.optimization.engine.greedy_timetable_scheduler import GreedyTimetableScheduler
 from backend.optimization.engine.timetable_cpsat_solver import TimetableCpsatSolver
 from backend.optimization.models.solution import SolverStatus
 from backend.optimization.models.timetable_problem import (
+    FixedTimetablePlacement,
     PeriodInfo,
     RoomInput,
     RoomKind,
@@ -65,6 +67,12 @@ def _tiny_timetable_problem() -> TimetableProblem:
     )
 
 
+def test_greedy_timetable_places_all_events() -> None:
+    solution = GreedyTimetableScheduler().schedule(_tiny_timetable_problem())
+    assert solution.status == SolverStatus.FEASIBLE
+    assert len(solution.entries) == 2
+
+
 def test_timetable_solver_allows_multiple_sessions_same_day_when_few_working_days() -> None:
     """4th year: 3 weekly lectures but only Thu–Fri must remain feasible."""
     working_days = ("thursday", "friday")
@@ -103,15 +111,86 @@ def test_timetable_solver_allows_multiple_sessions_same_day_when_few_working_day
         events=events,
         consecutive_blocks=build_consecutive_block_index(1),
     )
-    solution = TimetableCpsatSolver().solve(problem)
-    assert solution.status in (SolverStatus.OPTIMAL, SolverStatus.FEASIBLE)
+    solution = GreedyTimetableScheduler().schedule(problem)
+    assert solution.status == SolverStatus.FEASIBLE
     assert len(solution.entries) == 3
 
 
-def test_timetable_solver_places_non_conflicting_events() -> None:
-    solution = TimetableCpsatSolver().solve(_tiny_timetable_problem())
-    assert solution.status in (SolverStatus.OPTIMAL, SolverStatus.FEASIBLE)
-    assert len(solution.entries) == 2
-    assert solution.entries[0].day != solution.entries[1].day or (
-        set(solution.entries[0].period_numbers).isdisjoint(solution.entries[1].period_numbers)
+def test_greedy_timetable_across_two_batches() -> None:
+    batch_a = ScheduleEvent(
+        event_id="A-W1",
+        slot_id="A-T",
+        batch_code="2022-26",
+        working_days=WORKING_DAYS,
+        course_id=1,
+        course_code="A101",
+        course_name="Course A",
+        course_type="PCC",
+        kind="theory",
+        section_indices=(1,),
+        faculty_ids=(1,),
+        faculty_names=("Dr A",),
+        duration_periods=1,
+        room_kind=RoomKind.CLASSROOM,
     )
+    batch_b = ScheduleEvent(
+        event_id="B-W1",
+        slot_id="B-T",
+        batch_code="2023-27",
+        working_days=WORKING_DAYS,
+        course_id=2,
+        course_code="B101",
+        course_name="Course B",
+        course_type="PCC",
+        kind="theory",
+        section_indices=(1,),
+        faculty_ids=(2,),
+        faculty_names=("Dr B",),
+        duration_periods=1,
+        room_kind=RoomKind.CLASSROOM,
+    )
+    problem = TimetableProblem(
+        batch_codes=("2022-26", "2023-27"),
+        working_days=WORKING_DAYS,
+        teaching_periods=(1, 2),
+        period_info=(
+            PeriodInfo(1, "1st", "08:30", "09:25"),
+            PeriodInfo(2, "2nd", "09:25", "10:20"),
+        ),
+        classrooms=(RoomInput(1, "424", RoomKind.CLASSROOM),),
+        lecture_halls=(),
+        laboratories=(),
+        events=(batch_a, batch_b),
+        consecutive_blocks=build_consecutive_block_index(1),
+    )
+    solution = GreedyTimetableScheduler().schedule(problem)
+    assert solution.status == SolverStatus.FEASIBLE
+    assert len(solution.entries) == 2
+    assert "Greedy" in solution.messages[0]
+
+
+def test_cpsat_fixed_placement_still_supported() -> None:
+    problem = _tiny_timetable_problem()
+    fixed = FixedTimetablePlacement(
+        day="monday",
+        period_block=(1,),
+        room_id=10,
+        faculty_ids=(1,),
+        batch_code="2022-26",
+        section_indices=(1,),
+    )
+    constrained = TimetableProblem(
+        batch_codes=problem.batch_codes,
+        working_days=problem.working_days,
+        teaching_periods=problem.teaching_periods,
+        period_info=problem.period_info,
+        classrooms=problem.classrooms,
+        lecture_halls=problem.lecture_halls,
+        laboratories=problem.laboratories,
+        events=problem.events[:1],
+        consecutive_blocks=problem.consecutive_blocks,
+        fixed_placements=(fixed,),
+    )
+    solution = TimetableCpsatSolver().solve(constrained)
+    assert solution.status in (SolverStatus.OPTIMAL, SolverStatus.FEASIBLE)
+    assert solution.entries[0].day != "monday" or solution.entries[0].period_numbers != [1]

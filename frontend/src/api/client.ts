@@ -50,3 +50,26 @@ export async function apiPost<T>(path: string, body: unknown): Promise<T> {
   }
   return response.json() as Promise<T>;
 }
+
+async function parseErrorResponse(response: Response): Promise<string> {
+  let detail = response.statusText;
+  try {
+    const payload = (await response.json()) as { detail?: string };
+    if (payload.detail) detail = payload.detail;
+  } catch {
+    // ignore parse errors
+  }
+  return detail;
+}
+
+export async function apiPatch<T>(path: string, body: unknown): Promise<T> {
+  const response = await fetch(`${API_BASE}${path}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) {
+    throw new ApiError(await parseErrorResponse(response), response.status);
+  }
+  return response.json() as Promise<T>;
+}

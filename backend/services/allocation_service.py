@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import asyncio
+import logging
 from dataclasses import asdict
 
 from sqlalchemy import select
@@ -11,7 +11,7 @@ from sqlalchemy.orm import selectinload
 
 from backend.core.domain.aiml_config import DEPARTMENT_NAME, WEEKDAYS_MON_FRI
 from backend.core.domain.batch_planning import default_batch_plans
-from backend.core.domain.policy_config import LAB_FACULTY_PER_SESSION, resolve_designation_key
+from backend.core.domain.policy_config import LAB_FACULTY_PER_SESSION, UNLIMITED_MAX_WEEKLY_HOURS, resolve_designation_key
 from backend.models import (
     AllocationRun,
     Classroom,
@@ -25,13 +25,12 @@ from backend.models import (
     StudentBatch,
     TimeSlot,
 )
-from backend.optimization.engine.cpsat_solver import WorkloadCpsatSolver
+from backend.optimization.engine.greedy_workload_allocator import GreedyWorkloadAllocator
 from backend.optimization.engine.timetable_cpsat_solver import TimetableCpsatSolver
 from backend.optimization.models.problem_definition import (
     BatchPlanInput,
     CourseInput,
     FacultyInput,
-    SolverConfig,
     WorkloadProblem,
 )
 from backend.optimization.models.solution import OptimizationSolution, SolverStatus
@@ -55,32 +54,35 @@ from backend.optimization.preprocessing.schedule_event_builder import (
 from backend.optimization.preprocessing.slot_builder import build_assignment_slots
 from backend.schemas.allocation import (
     AllocationRunRead,
+    AllocationRunSummaryRead,
+    AllocationRunUpdateRequest,
     BatchSemesterPlan,
     BatchSemesterPlanRead,
     FacultyTimetableGridRead,
     FacultyWorkloadSummaryRead,
     PolicyViolationRead,
+    RoomTimetableGridRead,
     SectionTimetableGridRead,
     SlotAssignmentRead,
     TimetableEntryRead,
     TimetableGridRead,
 )
+from backend.services.allocation_edit_service import (
+    apply_faculty_names,
+    load_faculty_lookup,
+    recompute_faculty_summaries,
+    sync_timetable_entry_faculty,
+    touch_plan_metadata,
+)
 from backend.services.timetable_grid_service import (
     build_faculty_timetable_grids,
+    build_room_timetable_grids,
     build_section_timetable_grids,
     build_timetable_grid,
 )
 
 DAY_ORDER = ("monday", "tuesday", "wednesday", "thursday", "friday")
-
-
-def _split_solver_budget(max_time_seconds: float, schedule_timetable: bool) -> tuple[float, float]:
-    """Split wall-clock budget across sequential CP-SAT phases."""
-    if not schedule_timetable:
-        return max_time_seconds, 0.0
-    workload_budget = max(5.0, max_time_seconds * 0.4)
-    timetable_budget = max(5.0, max_time_seconds - workload_budget)
-    return workload_budget, timetable_budget
+logger = logging.getLogger(__name__)
 
 
 class AllocationService:
@@ -91,23 +93,14 @@ class AllocationService:
         max_time_seconds: float = 120.0,
         schedule_timetable: bool = True,
     ) -> AllocationRunRead:
+        """Greedy workload + CP-SAT timetable (first feasible solution)."""
         resolved_plans = await self._resolve_batch_plans(session, batch_plans)
         problem, primary_batch, primary_semester = await self._build_problem(
             session,
             batch_plans=resolved_plans,
         )
 
-        workload_budget, timetable_budget = _split_solver_budget(
-            max_time_seconds,
-            schedule_timetable,
-        )
-
-        workload_solver = WorkloadCpsatSolver()
-        workload_solution = await asyncio.to_thread(
-            workload_solver.solve,
-            problem,
-            config=SolverConfig(max_time_seconds=workload_budget),
-        )
+        workload_solution = GreedyWorkloadAllocator().allocate(problem)
 
         timetable_solution: TimetableSolution | None = None
         if (
@@ -119,11 +112,13 @@ class AllocationService:
                 batch_plans=problem.batch_plans,
                 workload_solution=workload_solution,
             )
-            timetable_solver = TimetableCpsatSolver()
-            timetable_solution = await asyncio.to_thread(
-                timetable_solver.solve,
+            timetable_config = TimetableSolverConfig(
+                max_time_seconds=max_time_seconds,
+                stop_after_first_solution=True,
+            )
+            timetable_solution = TimetableCpsatSolver().solve(
                 timetable_problem,
-                config=TimetableSolverConfig(max_time_seconds=timetable_budget),
+                config=timetable_config,
             )
 
         run = AllocationRun(
@@ -149,8 +144,95 @@ class AllocationService:
             )
         )
         run = result.scalar_one_or_none()
-        if run is None or run.solution is None:
+        if run is None:
             return None
+        if run.solution is None:
+            return None
+        return _read_from_stored(run)
+
+    async def list_runs(
+        self,
+        session: AsyncSession,
+        *,
+        saved_only: bool = False,
+        limit: int = 50,
+    ) -> list[AllocationRunSummaryRead]:
+        result = await session.execute(
+            select(AllocationRun)
+            .order_by(AllocationRun.created_at.desc())
+            .limit(limit)
+            .options(
+                selectinload(AllocationRun.batch),
+                selectinload(AllocationRun.semester).selectinload(Semester.academic_year_level),
+            )
+        )
+        summaries: list[AllocationRunSummaryRead] = []
+        for run in result.scalars().all():
+            payload = run.solution or {}
+            is_saved = bool(payload.get("is_saved"))
+            if saved_only and not is_saved:
+                continue
+            batch_plans = _batch_plans_from_payload(payload)
+            batch_codes = [plan.batch_code for plan in batch_plans] or [run.batch.batch_code]
+            summaries.append(
+                AllocationRunSummaryRead(
+                    id=run.id,
+                    plan_name=_plan_name(payload, run.id),
+                    is_saved=is_saved,
+                    batch_codes=batch_codes,
+                    batch_label=_batch_label(batch_plans, batch_codes),
+                    status=run.status,
+                    timetable_status=payload.get("timetable_status"),
+                    assignment_count=len(payload.get("assignments", [])),
+                    created_at=run.created_at.isoformat() if run.created_at else None,
+                    updated_at=payload.get("updated_at")
+                    or (run.updated_at.isoformat() if run.updated_at else None),
+                )
+            )
+        return summaries
+
+    async def update_run(
+        self,
+        session: AsyncSession,
+        run_id: int,
+        body: AllocationRunUpdateRequest,
+    ) -> AllocationRunRead:
+        result = await session.execute(
+            select(AllocationRun)
+            .where(AllocationRun.id == run_id)
+            .options(
+                selectinload(AllocationRun.batch),
+                selectinload(AllocationRun.semester).selectinload(Semester.academic_year_level),
+            )
+        )
+        run = result.scalar_one_or_none()
+        if run is None or run.solution is None:
+            msg = "Allocation run not found."
+            raise ValueError(msg)
+
+        payload = dict(run.solution)
+        faculty_by_id = await load_faculty_lookup(session)
+
+        if body.assignments is not None:
+            assignment_dicts = [item.model_dump() for item in body.assignments]
+            assignment_dicts = apply_faculty_names(assignment_dicts, faculty_by_id)
+            payload["assignments"] = assignment_dicts
+            payload["faculty_summaries"] = recompute_faculty_summaries(
+                assignment_dicts,
+                faculty_by_id,
+            )
+            payload["timetable_entries"] = sync_timetable_entry_faculty(
+                payload.get("timetable_entries", []),
+                assignment_dicts,
+            )
+
+        payload = touch_plan_metadata(
+            payload,
+            plan_name=body.plan_name,
+            is_saved=body.is_saved,
+        )
+        run.solution = payload
+        await session.flush()
         return _read_from_stored(run)
 
     async def _resolve_batch_plans(
@@ -367,11 +449,11 @@ class AllocationService:
                     designation_key=designation_key,
                     designation_label=member.designation,
                     min_weekly_hours=policy.min_weekly_hours if policy else 0.0,
-                    max_weekly_hours=policy.max_weekly_hours if policy else 40.0,
+                    max_weekly_hours=UNLIMITED_MAX_WEEKLY_HOURS,
                     min_theory_courses=policy.min_theory_courses if policy else 0,
                     min_lab_courses=policy.min_lab_courses if policy else 0,
                     min_lab_sessions=policy.min_lab_sessions if policy else None,
-                    max_lab_sessions=policy.max_lab_sessions if policy else None,
+                    max_lab_sessions=None,
                 )
             )
 
@@ -429,6 +511,7 @@ def _solution_to_dict(
     timetable: TimetableSolution | None,
 ) -> dict:
     return {
+        "run_state": "completed",
         "batch_plans": [asdict(plan) for plan in problem.batch_plans],
         "batch_codes": [plan.batch_code for plan in problem.batch_plans],
         "status": workload.status.value,
@@ -440,7 +523,34 @@ def _solution_to_dict(
         "timetable_status": timetable.status.value if timetable else None,
         "timetable_messages": timetable.messages if timetable else [],
         "timetable_entries": [asdict(entry) for entry in timetable.entries] if timetable else [],
+        "plan_name": None,
+        "is_saved": False,
+        "updated_at": None,
     }
+
+
+def _plan_name(payload: dict, run_id: int) -> str:
+    name = (payload.get("plan_name") or "").strip()
+    if name:
+        return name
+    return f"Run #{run_id}"
+
+
+def _batch_label(batch_plans: list[BatchSemesterPlanRead], batch_codes: list[str]) -> str:
+    if batch_plans:
+        return " · ".join(
+            f"{plan.batch_code} (sem {plan.semester_number})" for plan in batch_plans
+        )
+    return " · ".join(batch_codes)
+
+
+def _metadata_from_payload(payload: dict, run_id: int) -> tuple[str | None, bool, str | None]:
+    plan_name = (payload.get("plan_name") or "").strip() or None
+    is_saved = bool(payload.get("is_saved"))
+    updated_at = payload.get("updated_at")
+    if not plan_name and is_saved:
+        plan_name = _plan_name(payload, run_id)
+    return plan_name, is_saved, updated_at
 
 
 def _timetable_entries_from_solution(
@@ -455,13 +565,38 @@ def _timetable_views(
     timetable_entries: list[TimetableEntryRead],
     faculty_summaries: list[FacultyWorkloadSummaryRead],
     batch_plans: list[BatchSemesterPlanRead],
-) -> tuple[TimetableGridRead | None, list[FacultyTimetableGridRead], list[SectionTimetableGridRead]]:
+) -> tuple[
+    TimetableGridRead | None,
+    list[FacultyTimetableGridRead],
+    list[SectionTimetableGridRead],
+    list[RoomTimetableGridRead],
+    list[RoomTimetableGridRead],
+]:
     section_grids = build_section_timetable_grids(timetable_entries, batch_plans)
+    classroom_grids = build_room_timetable_grids(timetable_entries, "classroom")
+    laboratory_grids = build_room_timetable_grids(timetable_entries, "laboratory")
     if not timetable_entries:
-        return None, [], section_grids
+        return None, [], section_grids, classroom_grids, laboratory_grids
     grid = build_timetable_grid(timetable_entries)
     faculty_grids = build_faculty_timetable_grids(timetable_entries, faculty_summaries)
-    return grid, faculty_grids, section_grids
+    return grid, faculty_grids, section_grids, classroom_grids, laboratory_grids
+
+
+def _batch_plans_from_payload(payload: dict) -> list[BatchSemesterPlanRead]:
+    raw_plans = payload.get("batch_plans", [])
+    if raw_plans:
+        return [BatchSemesterPlanRead.model_validate(plan) for plan in raw_plans]
+    batch_codes = payload.get("batch_codes") or []
+    semester_number = payload.get("semester_number", 0)
+    return [
+        BatchSemesterPlanRead(
+            batch_code=code,
+            semester_number=semester_number,
+            section_count=payload.get("section_count", 0),
+            working_days=[],
+        )
+        for code in batch_codes
+    ]
 
 
 def _to_read_model(
@@ -475,7 +610,7 @@ def _to_read_model(
         FacultyWorkloadSummaryRead(**asdict(s)) for s in workload.faculty_summaries
     ]
     batch_plans = _batch_plan_reads(problem)
-    timetable_grid, faculty_timetable_grids, section_timetable_grids = _timetable_views(
+    timetable_grid, faculty_timetable_grids, section_timetable_grids, classroom_timetable_grids, laboratory_timetable_grids = _timetable_views(
         timetable_entries,
         faculty_summaries,
         batch_plans,
@@ -484,12 +619,15 @@ def _to_read_model(
     first_plan = batch_plans[0] if batch_plans else None
     return AllocationRunRead(
         id=run.id,
+        plan_name=None,
+        is_saved=False,
         batch_plans=batch_plans,
         batch_codes=batch_codes,
         batch_code=batch_codes[0] if batch_codes else "",
         semester_number=first_plan.semester_number if first_plan else None,
         section_count=first_plan.section_count if first_plan else None,
         status=workload.status.value,
+        run_state="completed",
         timetable_status=timetable.status.value if timetable else None,
         objective_value=workload.objective_value,
         assignment_count=len(workload.assignments),
@@ -504,11 +642,35 @@ def _to_read_model(
         timetable_grid=timetable_grid,
         faculty_timetable_grids=faculty_timetable_grids,
         section_timetable_grids=section_timetable_grids,
+        classroom_timetable_grids=classroom_timetable_grids,
+        laboratory_timetable_grids=laboratory_timetable_grids,
     )
 
 
 def _read_from_stored(run: AllocationRun) -> AllocationRunRead:
     payload = run.solution or {}
+    run_state = payload.get("run_state")
+    if run.status == "failed":
+        plan_reads = _batch_plans_from_payload(payload)
+        batch_codes = [plan.batch_code for plan in plan_reads]
+        first_plan = plan_reads[0] if plan_reads else None
+        return AllocationRunRead(
+            id=run.id,
+            batch_plans=plan_reads,
+            batch_codes=batch_codes,
+            batch_code=batch_codes[0] if batch_codes else run.batch.batch_code,
+            semester_number=first_plan.semester_number if first_plan else run.semester.semester_number,
+            section_count=first_plan.section_count if first_plan else None,
+            status="failed",
+            run_state="failed",
+            error_message=payload.get("error_message"),
+            objective_value=run.objective_value,
+            assignment_count=0,
+            faculty_count=0,
+            timetable_entry_count=0,
+            messages=[payload.get("error_message", "Allocation run failed.")],
+        )
+
     raw_plans = payload.get("batch_plans", [])
     if raw_plans:
         batch_plans = [BatchSemesterPlanRead.model_validate(plan) for plan in raw_plans]
@@ -534,19 +696,27 @@ def _read_from_stored(run: AllocationRun) -> AllocationRunRead:
         FacultyWorkloadSummaryRead.model_validate(s)
         for s in payload.get("faculty_summaries", [])
     ]
-    timetable_grid, faculty_timetable_grids, section_timetable_grids = _timetable_views(
+    timetable_grid, faculty_timetable_grids, section_timetable_grids, classroom_timetable_grids, laboratory_timetable_grids = _timetable_views(
         timetable_entries,
         faculty_summaries,
         batch_plans,
     )
+    plan_name, is_saved, updated_at = _metadata_from_payload(payload, run.id)
     return AllocationRunRead(
         id=run.id,
+        plan_name=plan_name,
+        is_saved=is_saved,
         batch_plans=batch_plans,
         batch_codes=batch_codes,
         batch_code=batch_codes[0] if batch_codes else run.batch.batch_code,
         semester_number=first_plan.semester_number if first_plan else run.semester.semester_number,
         section_count=first_plan.section_count if first_plan else payload.get("section_count"),
         status=run.status,
+        run_state=run_state or "completed",
+        error_message=payload.get("error_message"),
+        started_at=payload.get("started_at"),
+        updated_at=updated_at
+        or (run.updated_at.isoformat() if run.updated_at else None),
         timetable_status=payload.get("timetable_status"),
         objective_value=run.objective_value,
         assignment_count=len(payload.get("assignments", [])),
@@ -563,4 +733,6 @@ def _read_from_stored(run: AllocationRun) -> AllocationRunRead:
         timetable_grid=timetable_grid,
         faculty_timetable_grids=faculty_timetable_grids,
         section_timetable_grids=section_timetable_grids,
+        classroom_timetable_grids=classroom_timetable_grids,
+        laboratory_timetable_grids=laboratory_timetable_grids,
     )

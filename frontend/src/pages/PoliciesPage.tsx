@@ -31,8 +31,8 @@ export default function PoliciesPage() {
             <DataTable>
               <DataTableHead>
                 <DataTableHeaderCell>Designation</DataTableHeaderCell>
-                <DataTableHeaderCell>Max weekly hours</DataTableHeaderCell>
-                <DataTableHeaderCell>Max lab sessions</DataTableHeaderCell>
+                <DataTableHeaderCell>Weekly hour cap</DataTableHeaderCell>
+                <DataTableHeaderCell>Lab session cap</DataTableHeaderCell>
               </DataTableHead>
               <DataTableBody>
                 {data.designation_policies.map((policy) => (
@@ -40,10 +40,8 @@ export default function PoliciesPage() {
                     <DataTableCell className="font-medium text-slate-900">
                       {policy.designation_label}
                     </DataTableCell>
-                    <DataTableCell>{policy.max_weekly_hours}</DataTableCell>
-                    <DataTableCell>
-                      {policy.max_lab_sessions != null ? policy.max_lab_sessions : "—"}
-                    </DataTableCell>
+                    <DataTableCell>No limit</DataTableCell>
+                    <DataTableCell>No limit</DataTableCell>
                   </tr>
                 ))}
               </DataTableBody>

@@ -1,12 +1,20 @@
 import { useEffect, useMemo, useState } from "react";
 import { fetchStudentBatches } from "@/api/courses";
-import { runAllocation } from "@/api/allocations";
-import type { AllocationRun } from "@/types/api";
+import { fetchFaculty } from "@/api/faculty";
+import {
+  fetchAllocationRun,
+  fetchAllocationRuns,
+  runAllocation,
+  updateAllocationRun,
+} from "@/api/allocations";
+import type { AllocationAssignment, AllocationRun } from "@/types/api";
+import { EditableAssignmentsTable } from "@/components/EditableAssignmentsTable";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { LoadingState } from "@/components/ui/LoadingState";
 import { ErrorState } from "@/components/ui/ErrorState";
 import { Badge } from "@/components/ui/Badge";
 import { TimetableGridView } from "@/components/TimetableGridView";
+import { ClassFacultyContactsFooter, buildSectionContactRows } from "@/components/ClassFacultyContactsTable";
 import {
   DataTable,
   DataTableBody,
@@ -19,11 +27,17 @@ import { useFetch } from "@/hooks/useFetch";
 
 const SEMESTER_OPTIONS = [3, 4, 5, 6, 7];
 
+function isSolverOk(status: string) {
+  return status === "optimal" || status === "feasible";
+}
+
 export default function AllocationsPage() {
   const batches = useFetch(fetchStudentBatches);
+  const savedPlans = useFetch(fetchAllocationRuns);
   const [selectedBatches, setSelectedBatches] = useState<string[]>([]);
   const [semesterByBatch, setSemesterByBatch] = useState<Record<string, number>>({});
   const [loading, setLoading] = useState(false);
+  const [loadPlanLoading, setLoadPlanLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<AllocationRun | null>(null);
 
@@ -78,13 +92,31 @@ export default function AllocationsPage() {
       }));
       const run = await runAllocation({
         batch_plans,
-        max_time_seconds: selectedBatches.length > 1 ? 180 : 120,
+        schedule_timetable: true,
       });
+      if (run.status === "failed") {
+        setError(run.error_message ?? run.messages?.[0] ?? "Allocation failed");
+        return;
+      }
       setResult(run);
+      savedPlans.reload();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Allocation failed");
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function handleLoadPlan(runId: number) {
+    setLoadPlanLoading(true);
+    setError(null);
+    try {
+      const loaded = await fetchAllocationRun(runId);
+      setResult(loaded);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not load saved plan.");
+    } finally {
+      setLoadPlanLoading(false);
     }
   }
 
@@ -107,7 +139,7 @@ export default function AllocationsPage() {
       {batches.loading && <LoadingState />}
       {error && <ErrorState message={error} onRetry={handleRun} />}
       {loading && (
-        <LoadingState message="Solving workload and timetable with OR-Tools CP-SAT — this can take 2–5 minutes for all batches…" />
+        <LoadingState message="Assigning workload and building timetable (greedy, all batches)…" />
       )}
       {!batches.loading && allBatchCodes.length > 0 && (
         <section className="mb-6 rounded-lg border border-slate-200 bg-white p-4">
@@ -158,26 +190,180 @@ export default function AllocationsPage() {
           </div>
         </section>
       )}
-      {result && !loading && <AllocationResults result={result} />}
+      {!batches.loading && (
+        <section className="mb-6 rounded-lg border border-slate-200 bg-white p-4">
+          <h2 className="text-sm font-semibold text-slate-900">Previous runs</h2>
+          <p className="mb-3 text-xs text-slate-600">
+            Open a past allocation version without running again.
+          </p>
+          {savedPlans.loading && (
+            <p className="text-sm text-slate-500">Loading previous runs…</p>
+          )}
+          {savedPlans.error && (
+            <ErrorState message={savedPlans.error} onRetry={savedPlans.reload} />
+          )}
+          {!savedPlans.loading && !savedPlans.error && (
+            <label className="flex max-w-3xl flex-col gap-1 text-sm text-slate-700">
+              Select run
+              <select
+                value={result?.id ?? ""}
+                disabled={loadPlanLoading || (savedPlans.data?.length ?? 0) === 0}
+                onChange={(event) => {
+                  const runId = Number(event.target.value);
+                  if (runId > 0) {
+                    void handleLoadPlan(runId);
+                  }
+                }}
+                className="rounded-lg border border-slate-300 bg-white px-3 py-2"
+              >
+                <option value="">
+                  {(savedPlans.data?.length ?? 0) === 0
+                    ? "No previous runs yet"
+                    : "Choose a previous run…"}
+                </option>
+                {(savedPlans.data ?? []).map((plan) => (
+                  <option key={plan.id} value={plan.id}>
+                    {plan.is_saved ? "★ " : ""}
+                    {plan.plan_name} — {plan.batch_label}
+                    {plan.updated_at
+                      ? ` · ${new Date(plan.updated_at).toLocaleString()}`
+                      : ""}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+          {loadPlanLoading && (
+            <p className="mt-2 text-xs text-slate-500">Loading selected run…</p>
+          )}
+        </section>
+      )}
+      {result && !loading && (
+        <AllocationResults
+          result={result}
+          onResultChange={setResult}
+          onPlansChanged={savedPlans.reload}
+        />
+      )}
     </>
   );
 }
 
-function AllocationResults({ result }: { result: AllocationRun }) {
+function AllocationResults({
+  result,
+  onResultChange,
+  onPlansChanged,
+}: {
+  result: AllocationRun;
+  onResultChange: (run: AllocationRun) => void;
+  onPlansChanged: () => void;
+}) {
+  const facultyRoster = useFetch(fetchFaculty);
+  const [isEditing, setIsEditing] = useState(false);
+  const [draftAssignments, setDraftAssignments] = useState<AllocationAssignment[]>([]);
+  const [planName, setPlanName] = useState(result.plan_name ?? "");
+  const [saveLoading, setSaveLoading] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setPlanName(result.plan_name ?? "");
+    setIsEditing(false);
+    setDraftAssignments(result.assignments.map((row) => ({ ...row })));
+  }, [result.id]);
+
   const planLabel = result.batch_plans
     .map((plan) => `${plan.batch_code} (sem ${plan.semester_number}, ${plan.section_count} sec)`)
     .join(" · ");
 
+  function startEditing() {
+    setDraftAssignments(result.assignments.map((row) => ({ ...row })));
+    setIsEditing(true);
+  }
+
+  function cancelEditing() {
+    setDraftAssignments(result.assignments.map((row) => ({ ...row })));
+    setIsEditing(false);
+  }
+
+  async function handleSavePlan() {
+    const trimmedName = planName.trim();
+    if (!trimmedName) {
+      setSaveError("Enter a plan name before saving.");
+      return;
+    }
+    setSaveLoading(true);
+    setSaveError(null);
+    try {
+      const updated = await updateAllocationRun(result.id, {
+        plan_name: trimmedName,
+        is_saved: true,
+        assignments: isEditing ? draftAssignments : result.assignments,
+      });
+      onResultChange(updated);
+      setIsEditing(false);
+      onPlansChanged();
+    } catch (err) {
+      setSaveError(err instanceof Error ? err.message : "Could not save plan.");
+    } finally {
+      setSaveLoading(false);
+    }
+  }
+
   return (
     <div className="space-y-8">
+      <section className="rounded-lg border border-slate-200 bg-white p-4">
+        <div className="flex flex-wrap items-end gap-3">
+          <label className="flex min-w-[14rem] flex-1 flex-col gap-1 text-sm text-slate-700">
+            Plan name
+            <input
+              type="text"
+              value={planName}
+              onChange={(event) => setPlanName(event.target.value)}
+              placeholder="e.g. AIML Sem 5 draft"
+              className="rounded-lg border border-slate-300 px-3 py-2"
+            />
+          </label>
+          {!isEditing ? (
+            <button
+              type="button"
+              onClick={startEditing}
+              className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
+            >
+              Edit assignments
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={cancelEditing}
+              className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
+            >
+              Cancel edit
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={handleSavePlan}
+            disabled={saveLoading}
+            className="rounded-lg bg-emerald-700 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-600 disabled:opacity-50"
+          >
+            {saveLoading ? "Saving…" : "Save plan"}
+          </button>
+        </div>
+        {saveError && <p className="mt-3 text-sm text-red-600">{saveError}</p>}
+        {result.is_saved && (
+          <p className="mt-2 text-xs text-emerald-700">
+            Saved plan{result.updated_at ? ` · last updated ${new Date(result.updated_at).toLocaleString()}` : ""}
+          </p>
+        )}
+      </section>
       <div className="flex flex-wrap gap-3 text-sm text-slate-600">
         <span>Run #{result.id}</span>
         <span>{planLabel}</span>
-        <Badge variant={result.status === "optimal" ? "success" : "warning"}>
+        <Badge variant={isSolverOk(result.status) ? "success" : "warning"}>
           workload: {result.status}
         </Badge>
         {result.timetable_status && (
-          <Badge variant={result.timetable_status === "optimal" ? "success" : "warning"}>
+          <Badge variant={isSolverOk(result.timetable_status) ? "success" : "warning"}>
             timetable: {result.timetable_status}
           </Badge>
         )}
@@ -213,42 +399,32 @@ function AllocationResults({ result }: { result: AllocationRun }) {
       )}
       {(result.timetable_grid ||
         (result.section_timetable_grids?.length ?? 0) > 0 ||
-        (result.faculty_timetable_grids?.length ?? 0) > 0) && (
-        <TimetableResults result={result} />
+        (result.faculty_timetable_grids?.length ?? 0) > 0 ||
+        (result.classroom_timetable_grids?.length ?? 0) > 0 ||
+        (result.laboratory_timetable_grids?.length ?? 0) > 0) && (
+        <TimetableResults result={result} facultyRoster={facultyRoster} />
       )}
       <section>
-        <h2 className="mb-3 text-lg font-semibold text-slate-900">Workload assignments</h2>
-        <DataTable>
-          <DataTableHead>
-            <DataTableHeaderCell>Batch</DataTableHeaderCell>
-            <DataTableHeaderCell>Course</DataTableHeaderCell>
-            <DataTableHeaderCell>Type</DataTableHeaderCell>
-            <DataTableHeaderCell>Kind</DataTableHeaderCell>
-            <DataTableHeaderCell>Sections</DataTableHeaderCell>
-            <DataTableHeaderCell>Hrs/wk</DataTableHeaderCell>
-            <DataTableHeaderCell>Faculty</DataTableHeaderCell>
-          </DataTableHead>
-          <DataTableBody>
-            {result.assignments.length === 0 ? (
-              <EmptyRow colSpan={7} message="No assignments." />
-            ) : (
-              result.assignments.map((row) => (
-                <tr key={row.slot_id} className="hover:bg-slate-50">
-                  <DataTableCell className="font-mono text-xs">{row.batch_code}</DataTableCell>
-                  <DataTableCell>
-                    <div className="font-mono text-xs">{row.course_code}</div>
-                    <div className="text-slate-600">{row.course_name}</div>
-                  </DataTableCell>
-                  <DataTableCell>{row.course_type}</DataTableCell>
-                  <DataTableCell>{row.kind}</DataTableCell>
-                  <DataTableCell>{row.section_indices.join(", ")}</DataTableCell>
-                  <DataTableCell>{row.weekly_hours}</DataTableCell>
-                  <DataTableCell>{row.faculty_names.join(" · ")}</DataTableCell>
-                </tr>
-              ))
-            )}
-          </DataTableBody>
-        </DataTable>
+        <div className="mb-3 flex items-center justify-between gap-2">
+          <h2 className="text-lg font-semibold text-slate-900">Workload assignments</h2>
+          {isEditing && (
+            <span className="text-xs font-medium uppercase tracking-wide text-amber-700">
+              Editing — change faculty, then Save plan
+            </span>
+          )}
+        </div>
+        {facultyRoster.data ? (
+          <EditableAssignmentsTable
+            assignments={isEditing ? draftAssignments : result.assignments}
+            faculty={facultyRoster.data}
+            editing={isEditing}
+            onChange={setDraftAssignments}
+          />
+        ) : facultyRoster.loading ? (
+          <LoadingState message="Loading faculty roster…" />
+        ) : (
+          <ErrorState message={facultyRoster.error ?? "Faculty roster unavailable."} />
+        )}
       </section>
       <section>
         <h2 className="mb-3 text-lg font-semibold text-slate-900">Faculty workload</h2>
@@ -281,19 +457,38 @@ function AllocationResults({ result }: { result: AllocationRun }) {
   );
 }
 
-type TimetableTab = "department" | "sections" | "faculty";
+type TimetableTab = "department" | "sections" | "faculty" | "classrooms" | "labs";
 
 function sectionGridKey(batchCode: string, sectionIndex: number): string {
   return `${batchCode}::${sectionIndex}`;
 }
 
-function TimetableResults({ result }: { result: AllocationRun }) {
+function roomGridKey(roomType: string, roomName: string): string {
+  return `${roomType}::${roomName}`;
+}
+
+function TimetableResults({
+  result,
+  facultyRoster,
+}: {
+  result: AllocationRun;
+  facultyRoster: ReturnType<typeof useFetch<import("@/types/api").FacultyMember[]>>;
+}) {
   const [tab, setTab] = useState<TimetableTab>("sections");
   const [facultyId, setFacultyId] = useState<number | null>(null);
   const [sectionKey, setSectionKey] = useState<string | null>(null);
+  const [classroomKey, setClassroomKey] = useState<string | null>(null);
+  const [laboratoryKey, setLaboratoryKey] = useState<string | null>(null);
+
+  const facultyById = useMemo(
+    () => new Map((facultyRoster.data ?? []).map((member) => [member.id, member])),
+    [facultyRoster.data],
+  );
 
   const facultyGrids = result.faculty_timetable_grids ?? [];
   const sectionGrids = result.section_timetable_grids ?? [];
+  const classroomGrids = result.classroom_timetable_grids ?? [];
+  const laboratoryGrids = result.laboratory_timetable_grids ?? [];
 
   const selectedFacultyGrid = useMemo(() => {
     if (facultyGrids.length === 0) {
@@ -316,6 +511,45 @@ function TimetableResults({ result }: { result: AllocationRun }) {
     );
   }, [sectionGrids, sectionKey]);
 
+  const selectedClassroomGrid = useMemo(() => {
+    if (classroomGrids.length === 0) {
+      return null;
+    }
+    const defaultKey = roomGridKey(classroomGrids[0].room_type, classroomGrids[0].room_name);
+    const targetKey = classroomKey ?? defaultKey;
+    return (
+      classroomGrids.find(
+        (item) => roomGridKey(item.room_type, item.room_name) === targetKey,
+      ) ?? classroomGrids[0]
+    );
+  }, [classroomGrids, classroomKey]);
+
+  const selectedLaboratoryGrid = useMemo(() => {
+    if (laboratoryGrids.length === 0) {
+      return null;
+    }
+    const defaultKey = roomGridKey(laboratoryGrids[0].room_type, laboratoryGrids[0].room_name);
+    const targetKey = laboratoryKey ?? defaultKey;
+    return (
+      laboratoryGrids.find(
+        (item) => roomGridKey(item.room_type, item.room_name) === targetKey,
+      ) ?? laboratoryGrids[0]
+    );
+  }, [laboratoryGrids, laboratoryKey]);
+
+  const sectionContactRows = useMemo(() => {
+    if (!selectedSectionGrid || !facultyRoster.data) {
+      return [];
+    }
+    return buildSectionContactRows(
+      selectedSectionGrid.batch_code,
+      selectedSectionGrid.section_index,
+      selectedSectionGrid.semester_number,
+      result.assignments,
+      facultyById,
+    );
+  }, [selectedSectionGrid, facultyRoster.data, result.assignments, facultyById]);
+
   const tabClass = (active: boolean) =>
     `rounded-lg px-3 py-1.5 text-sm font-medium ${
       active
@@ -330,10 +564,15 @@ function TimetableResults({ result }: { result: AllocationRun }) {
         <p className="text-sm text-slate-600">
           Official AIML grid: Mon–Fri rows, 7 teaching periods with BREAK and LUNCH columns
         </p>
-        {result.timetable_status && result.timetable_status !== "optimal" && (
+        {result.timetable_status && !isSolverOk(result.timetable_status) && (
           <p className="mt-1 text-sm text-amber-700">
             Timetable status: {result.timetable_status}. Section grids may be empty until scheduling
             succeeds.
+          </p>
+        )}
+        {result.timetable_status && isSolverOk(result.timetable_status) && (
+          <p className="mt-1 text-sm text-slate-600">
+            Greedy timetable across all selected batches (first available slot).
           </p>
         )}
       </div>
@@ -351,6 +590,22 @@ function TimetableResults({ result }: { result: AllocationRun }) {
         </button>
         <button type="button" onClick={() => setTab("faculty")} className={tabClass(tab === "faculty")}>
           By faculty ({facultyGrids.length})
+        </button>
+        <button
+          type="button"
+          onClick={() => setTab("classrooms")}
+          className={tabClass(tab === "classrooms")}
+          disabled={classroomGrids.length === 0}
+        >
+          By classroom ({classroomGrids.length})
+        </button>
+        <button
+          type="button"
+          onClick={() => setTab("labs")}
+          className={tabClass(tab === "labs")}
+          disabled={laboratoryGrids.length === 0}
+        >
+          By lab ({laboratoryGrids.length})
         </button>
       </div>
       {tab === "sections" && selectedSectionGrid && (
@@ -375,7 +630,20 @@ function TimetableResults({ result }: { result: AllocationRun }) {
               ))}
             </select>
           </label>
-          <TimetableGridView grid={selectedSectionGrid.grid} compact hideBatch />
+          <TimetableGridView
+            grid={selectedSectionGrid.grid}
+            compact
+            hideBatch
+            footer={
+              facultyRoster.loading ? (
+                <p className="px-3 py-2 text-xs text-slate-500">Loading faculty contacts…</p>
+              ) : facultyRoster.error ? (
+                <p className="px-3 py-2 text-xs text-red-600">{facultyRoster.error}</p>
+              ) : (
+                <ClassFacultyContactsFooter rows={sectionContactRows} />
+              )
+            }
+          />
         </div>
       )}
       {tab === "department" && result.timetable_grid && (
@@ -397,7 +665,51 @@ function TimetableResults({ result }: { result: AllocationRun }) {
               ))}
             </select>
           </label>
-          <TimetableGridView grid={selectedFacultyGrid.grid} compact />
+          <TimetableGridView grid={selectedFacultyGrid.grid} compact hideRoom />
+        </div>
+      )}
+      {tab === "classrooms" && selectedClassroomGrid && (
+        <div className="space-y-3">
+          <label className="flex flex-wrap items-center gap-2 text-sm text-slate-700">
+            Classroom
+            <select
+              value={roomGridKey(selectedClassroomGrid.room_type, selectedClassroomGrid.room_name)}
+              onChange={(e) => setClassroomKey(e.target.value)}
+              className="rounded-lg border border-slate-300 bg-white px-3 py-2"
+            >
+              {classroomGrids.map((item) => (
+                <option
+                  key={roomGridKey(item.room_type, item.room_name)}
+                  value={roomGridKey(item.room_type, item.room_name)}
+                >
+                  Room {item.room_name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <TimetableGridView grid={selectedClassroomGrid.grid} compact hideRoom />
+        </div>
+      )}
+      {tab === "labs" && selectedLaboratoryGrid && (
+        <div className="space-y-3">
+          <label className="flex flex-wrap items-center gap-2 text-sm text-slate-700">
+            Laboratory
+            <select
+              value={roomGridKey(selectedLaboratoryGrid.room_type, selectedLaboratoryGrid.room_name)}
+              onChange={(e) => setLaboratoryKey(e.target.value)}
+              className="rounded-lg border border-slate-300 bg-white px-3 py-2"
+            >
+              {laboratoryGrids.map((item) => (
+                <option
+                  key={roomGridKey(item.room_type, item.room_name)}
+                  value={roomGridKey(item.room_type, item.room_name)}
+                >
+                  Lab {item.room_name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <TimetableGridView grid={selectedLaboratoryGrid.grid} compact hideRoom />
         </div>
       )}
     </section>

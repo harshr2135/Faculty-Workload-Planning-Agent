@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+# Max workload caps disabled for current planning runs (greedy allocator).
+UNLIMITED_MAX_WEEKLY_HOURS = 999.0
+
 
 @dataclass(frozen=True)
 class DesignationPolicyDefinition:
@@ -25,9 +28,9 @@ AIML_DESIGNATION_POLICIES: list[DesignationPolicyDefinition] = [
         min_theory_courses=0,
         min_lab_courses=0,
         min_weekly_hours=0.0,
-        max_weekly_hours=24.0,
+        max_weekly_hours=UNLIMITED_MAX_WEEKLY_HOURS,
         min_lab_sessions=None,
-        max_lab_sessions=5,
+        max_lab_sessions=None,
         match_keywords=("assistant professor",),
     ),
     DesignationPolicyDefinition(
@@ -36,9 +39,9 @@ AIML_DESIGNATION_POLICIES: list[DesignationPolicyDefinition] = [
         min_theory_courses=0,
         min_lab_courses=0,
         min_weekly_hours=0.0,
-        max_weekly_hours=22.0,
+        max_weekly_hours=UNLIMITED_MAX_WEEKLY_HOURS,
         min_lab_sessions=None,
-        max_lab_sessions=3,
+        max_lab_sessions=None,
         match_keywords=("associate professor",),
     ),
     DesignationPolicyDefinition(
@@ -47,7 +50,7 @@ AIML_DESIGNATION_POLICIES: list[DesignationPolicyDefinition] = [
         min_theory_courses=0,
         min_lab_courses=0,
         min_weekly_hours=0.0,
-        max_weekly_hours=10.0,
+        max_weekly_hours=UNLIMITED_MAX_WEEKLY_HOURS,
         min_lab_sessions=None,
         max_lab_sessions=None,
         match_keywords=("professor",),
@@ -58,7 +61,7 @@ AIML_DESIGNATION_POLICIES: list[DesignationPolicyDefinition] = [
         min_theory_courses=0,
         min_lab_courses=0,
         min_weekly_hours=0.0,
-        max_weekly_hours=10.0,
+        max_weekly_hours=UNLIMITED_MAX_WEEKLY_HOURS,
         min_lab_sessions=None,
         max_lab_sessions=None,
         match_keywords=("chairperson", "chairpe"),

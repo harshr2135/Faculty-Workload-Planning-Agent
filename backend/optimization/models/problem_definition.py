@@ -89,3 +89,4 @@ class SolverConfig:
     mismatch_penalty: int = 50
     fallback_penalty: int = 200
     balance_penalty: int = 10
+    stop_after_first_solution: bool = False

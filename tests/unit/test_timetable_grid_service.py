@@ -3,6 +3,7 @@
 from backend.schemas.allocation import FacultyWorkloadSummaryRead, TimetableEntryRead
 from backend.services.timetable_grid_service import (
     build_faculty_timetable_grids,
+    build_room_timetable_grids,
     build_section_timetable_grids,
     build_timetable_grid,
 )
@@ -30,6 +31,27 @@ def _sample_entry(**overrides: object) -> TimetableEntryRead:
     }
     payload.update(overrides)
     return TimetableEntryRead(**payload)
+
+
+def test_lab_entry_spans_two_grid_columns() -> None:
+    grid = build_timetable_grid([
+        _sample_entry(
+            event_id="lab-1",
+            kind="lab",
+            period_numbers=[3, 4],
+            period_label="P3–P4",
+            room_type="laboratory",
+            room_name="508",
+        )
+    ])
+    monday = grid.rows[0]
+    third_hour = next(cell for cell in monday.cells if cell.period_number == 3)
+    fourth_hour = next(cell for cell in monday.cells if cell.period_number == 4)
+    assert len(third_hour.items) == 1
+    assert third_hour.items[0].col_span == 2
+    assert third_hour.items[0].kind == "lab"
+    assert fourth_hour.span_continuation is True
+    assert fourth_hour.items == []
 
 
 def test_grid_has_nine_columns_including_break_and_lunch() -> None:
@@ -140,3 +162,33 @@ def test_section_grids_per_batch_and_section() -> None:
     assert len(sec1.grid.rows[0].cells[0].items) == 1
     assert len(sec2_26.grid.rows) == 2
     assert sec2_26.grid.rows[0].day == "thursday"
+
+
+def test_room_grids_group_by_classroom_and_laboratory() -> None:
+    entries = [
+        _sample_entry(room_type="classroom", room_name="424", period_numbers=[1]),
+        _sample_entry(
+            event_id="evt-2",
+            room_type="classroom",
+            room_name="431",
+            day="tuesday",
+            period_numbers=[2],
+        ),
+        _sample_entry(
+            event_id="evt-3",
+            kind="lab",
+            room_type="laboratory",
+            room_name="508",
+            day="wednesday",
+            period_numbers=[3, 4],
+        ),
+    ]
+    classrooms = build_room_timetable_grids(entries, "classroom")
+    laboratories = build_room_timetable_grids(entries, "laboratory")
+    assert len(classrooms) == 2
+    assert len(laboratories) == 1
+    room_424 = next(grid for grid in classrooms if grid.room_name == "424")
+    assert len(room_424.grid.rows[0].cells[0].items) == 1
+    lab_508 = laboratories[0]
+    assert lab_508.room_name == "508"
+    assert lab_508.grid.rows[2].cells[3].items[0].col_span == 2

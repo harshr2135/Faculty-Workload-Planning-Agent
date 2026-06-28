@@ -37,7 +37,7 @@ class AllocationRunRequest(BaseModel):
         description="Legacy: applied to every batch in batch_codes when batch_plans is empty.",
         examples=[5],
     )
-    max_time_seconds: float = Field(default=120.0, ge=5.0, le=600.0)
+    max_time_seconds: float = Field(default=120.0, ge=5.0, le=900.0)
     schedule_timetable: bool = Field(
         default=True,
         description="After workload assignment, solve weekly day/slot/room grid (Slice 2).",
@@ -127,6 +127,7 @@ class TimetableGridItemRead(BaseModel):
     room_name: str
     room_type: str
     period_label: str
+    col_span: int = 1
 
 
 class TimetableGridCellRead(BaseModel):
@@ -135,6 +136,7 @@ class TimetableGridCellRead(BaseModel):
     period_number: int | None = None
     slot_type: str = "teaching"
     fixed_label: str | None = None
+    span_continuation: bool = False
     items: list[TimetableGridItemRead] = Field(default_factory=list)
 
 
@@ -172,14 +174,54 @@ class SectionTimetableGridRead(BaseModel):
     grid: TimetableGridRead
 
 
+class RoomTimetableGridRead(BaseModel):
+    room_name: str
+    room_type: str
+    grid: TimetableGridRead
+
+
+class AllocationRunSummaryRead(BaseModel):
+    id: int
+    plan_name: str
+    is_saved: bool
+    batch_codes: list[str]
+    batch_label: str
+    status: str
+    timetable_status: str | None = None
+    assignment_count: int
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+class AllocationRunUpdateRequest(BaseModel):
+    plan_name: str | None = Field(default=None, max_length=120)
+    is_saved: bool | None = None
+    assignments: list[SlotAssignmentRead] | None = None
+
+
+class AllocationRunProgressRead(BaseModel):
+    phase: str
+    label: str
+    percent: int = Field(ge=0, le=100)
+    step: int = Field(ge=1)
+    total_steps: int = Field(ge=1)
+
+
 class AllocationRunRead(BaseModel):
     id: int
+    plan_name: str | None = None
+    is_saved: bool = False
     batch_plans: list[BatchSemesterPlanRead]
     batch_codes: list[str]
     batch_code: str
     semester_number: int | None = None
     section_count: int | None = None
     status: str
+    run_state: str | None = None
+    error_message: str | None = None
+    progress: AllocationRunProgressRead | None = None
+    started_at: str | None = None
+    updated_at: str | None = None
     timetable_status: str | None = None
     objective_value: int | None
     assignment_count: int
@@ -194,3 +236,5 @@ class AllocationRunRead(BaseModel):
     timetable_grid: TimetableGridRead | None = None
     faculty_timetable_grids: list[FacultyTimetableGridRead] = Field(default_factory=list)
     section_timetable_grids: list[SectionTimetableGridRead] = Field(default_factory=list)
+    classroom_timetable_grids: list[RoomTimetableGridRead] = Field(default_factory=list)
+    laboratory_timetable_grids: list[RoomTimetableGridRead] = Field(default_factory=list)

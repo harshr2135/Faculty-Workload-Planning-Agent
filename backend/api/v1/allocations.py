@@ -7,6 +7,8 @@ from backend.database.session import get_db_session
 from backend.schemas.allocation import (
     AllocationRunRead,
     AllocationRunRequest,
+    AllocationRunSummaryRead,
+    AllocationRunUpdateRequest,
     BatchSemesterPlan,
 )
 from backend.services.allocation_service import AllocationService
@@ -38,7 +40,7 @@ async def run_allocation(
     body: AllocationRunRequest,
     session: AsyncSession = Depends(get_db_session),
 ) -> AllocationRunRead:
-    """Run CP-SAT workload + weekly timetable for one or more batches (each with its semester)."""
+    """Run greedy workload + timetable synchronously (returns when complete)."""
     service = AllocationService()
     try:
         batch_plans = _resolve_request_plans(body)
@@ -50,6 +52,29 @@ async def run_allocation(
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
+@router.get("/allocations", response_model=list[AllocationRunSummaryRead])
+async def list_allocation_runs(
+    saved_only: bool = False,
+    limit: int = 50,
+    session: AsyncSession = Depends(get_db_session),
+) -> list[AllocationRunSummaryRead]:
+    service = AllocationService()
+    return await service.list_runs(session, saved_only=saved_only, limit=limit)
+
+
+@router.patch("/allocations/{run_id}", response_model=AllocationRunRead)
+async def update_allocation_run(
+    run_id: int,
+    body: AllocationRunUpdateRequest,
+    session: AsyncSession = Depends(get_db_session),
+) -> AllocationRunRead:
+    service = AllocationService()
+    try:
+        return await service.update_run(session, run_id=run_id, body=body)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
 
 @router.get("/allocations/{run_id}", response_model=AllocationRunRead)

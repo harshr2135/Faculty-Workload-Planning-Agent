@@ -118,6 +118,7 @@ export interface AllocationViolation {
 
 export interface AllocationAssignment {
   slot_id: string;
+  course_id: number;
   batch_code: string;
   course_code: string;
   course_name: string;
@@ -125,6 +126,7 @@ export interface AllocationAssignment {
   kind: string;
   section_indices: number[];
   weekly_hours: number;
+  faculty_ids: number[];
   faculty_names: string[];
 }
 
@@ -152,14 +154,29 @@ export interface BatchSemesterPlan {
   working_days: string[];
 }
 
+export interface AllocationRunProgress {
+  phase: string;
+  label: string;
+  percent: number;
+  step: number;
+  total_steps: number;
+}
+
 export interface AllocationRun {
   id: number;
+  plan_name: string | null;
+  is_saved: boolean;
   batch_plans: BatchSemesterPlan[];
   batch_codes: string[];
   batch_code: string;
   semester_number: number | null;
   section_count: number | null;
   status: string;
+  run_state?: string | null;
+  error_message?: string | null;
+  progress?: AllocationRunProgress | null;
+  started_at?: string | null;
+  updated_at?: string | null;
   timetable_status: string | null;
   objective_value: number | null;
   assignment_count: number;
@@ -174,6 +191,8 @@ export interface AllocationRun {
   timetable_grid: TimetableGrid | null;
   faculty_timetable_grids: FacultyTimetableGrid[];
   section_timetable_grids: SectionTimetableGrid[];
+  classroom_timetable_grids: RoomTimetableGrid[];
+  laboratory_timetable_grids: RoomTimetableGrid[];
 }
 
 export interface FacultyTimetableGrid {
@@ -189,6 +208,12 @@ export interface SectionTimetableGrid {
   grid: TimetableGrid;
 }
 
+export interface RoomTimetableGrid {
+  room_name: string;
+  room_type: string;
+  grid: TimetableGrid;
+}
+
 export interface TimetableGridItem {
   batch_code: string;
   course_code: string;
@@ -200,6 +225,7 @@ export interface TimetableGridItem {
   room_name: string;
   room_type: string;
   period_label: string;
+  col_span?: number;
 }
 
 export interface TimetableGridCell {
@@ -208,6 +234,7 @@ export interface TimetableGridCell {
   period_number: number | null;
   slot_type: string;
   fixed_label: string | null;
+  span_continuation?: boolean;
   items: TimetableGridItem[];
 }
 

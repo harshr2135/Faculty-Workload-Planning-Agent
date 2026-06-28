@@ -9,6 +9,7 @@ from backend.schemas.allocation import (
     BatchSemesterPlanRead,
     FacultyTimetableGridRead,
     FacultyWorkloadSummaryRead,
+    RoomTimetableGridRead,
     SectionTimetableGridRead,
     TimetableEntryRead,
     TimetableGridCellRead,
@@ -77,6 +78,41 @@ def _build_period_columns() -> list[TimetableGridPeriodRead]:
 
 
 
+def _grid_col_span(period_numbers: list[int]) -> int:
+    """How many grid columns a multi-period entry spans (includes break/lunch gaps)."""
+    if len(period_numbers) <= 1:
+        return 1
+    first_period = period_numbers[0]
+    last_period = period_numbers[-1]
+    start_idx = next(
+        index
+        for index, period in enumerate(AIML_DAILY_SCHEDULE)
+        if period.period_number == first_period
+    )
+    end_idx = next(
+        index
+        for index, period in enumerate(AIML_DAILY_SCHEDULE)
+        if period.period_number == last_period
+    )
+    return end_idx - start_idx + 1
+
+
+def _covered_sort_orders_for_entry(period_numbers: list[int]) -> set[int]:
+    if len(period_numbers) <= 1:
+        return set()
+    first_period = period_numbers[0]
+    start_idx = next(
+        index
+        for index, period in enumerate(AIML_DAILY_SCHEDULE)
+        if period.period_number == first_period
+    )
+    span = _grid_col_span(period_numbers)
+    return {
+        AIML_DAILY_SCHEDULE[index].sort_order
+        for index in range(start_idx + 1, start_idx + span)
+    }
+
+
 def build_timetable_grid(
     entries: list[TimetableEntryRead],
     allowed_days: tuple[str, ...] | None = None,
@@ -87,7 +123,22 @@ def build_timetable_grid(
     rows: list[TimetableGridRowRead] = []
     for day in days:
         cells: list[TimetableGridCellRead] = []
+        covered_sort_orders: set[int] = set()
         for period in AIML_DAILY_SCHEDULE:
+            if period.sort_order in covered_sort_orders:
+                cells.append(
+                    TimetableGridCellRead(
+                        day=day,
+                        sort_order=period.sort_order,
+                        period_number=period.period_number,
+                        slot_type=period.slot_type,
+                        fixed_label=None,
+                        span_continuation=True,
+                        items=[],
+                    )
+                )
+                continue
+
             if period.slot_type != "teaching":
                 cells.append(
                     TimetableGridCellRead(
@@ -110,6 +161,8 @@ def build_timetable_grid(
                 and period_number in entry.period_numbers
                 and entry.period_numbers[0] == period_number
             ]
+            for entry in cell_entries:
+                covered_sort_orders.update(_covered_sort_orders_for_entry(entry.period_numbers))
             cells.append(
                 TimetableGridCellRead(
                     day=day,
@@ -129,6 +182,7 @@ def build_timetable_grid(
                             room_name=entry.room_name,
                             room_type=entry.room_type,
                             period_label=entry.period_label,
+                            col_span=_grid_col_span(entry.period_numbers),
                         )
                         for entry in cell_entries
                     ],
@@ -226,6 +280,37 @@ def build_section_timetable_grids(
                 section_index=section_index,
                 semester_number=semester_number,
                 grid=build_timetable_grid(section_entries, allowed_days=working_days),
+            )
+        )
+    return grids
+
+
+def build_room_timetable_grids(
+    entries: list[TimetableEntryRead],
+    room_type: str,
+) -> list[RoomTimetableGridRead]:
+    """One weekly grid per physical room of the given type (classroom or laboratory)."""
+    room_names = sorted(
+        {
+            entry.room_name
+            for entry in entries
+            if entry.room_type == room_type and entry.room_name
+        }
+    )
+    grids: list[RoomTimetableGridRead] = []
+    for room_name in room_names:
+        room_entries = [
+            entry
+            for entry in entries
+            if entry.room_type == room_type and entry.room_name == room_name
+        ]
+        if not room_entries:
+            continue
+        grids.append(
+            RoomTimetableGridRead(
+                room_name=room_name,
+                room_type=room_type,
+                grid=build_timetable_grid(room_entries),
             )
         )
     return grids

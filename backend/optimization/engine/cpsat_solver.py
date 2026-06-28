@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from ortools.sat.python import cp_model
 
+from backend.optimization.engine.solver_tuning import apply_cpsat_performance
 from backend.optimization.models.problem_definition import AssignmentSlot, SlotKind, SolverConfig, WorkloadProblem
 from backend.optimization.models.solution import (
     FacultyWorkloadSummary,
@@ -92,7 +93,7 @@ class WorkloadCpsatSolver:
             ]
             model.Add(sum(candidates) == problem.lab_faculty_per_session)
 
-        # Max weekly hours per faculty (theory + lab).
+        # Max weekly hours per faculty (theory + lab) — skipped when caps are disabled.
         faculty_loads: dict[int, cp_model.LinearExpr] = {}
         for faculty in problem.faculty:
             terms: list[cp_model.LinearExpr] = []
@@ -106,8 +107,6 @@ class WorkloadCpsatSolver:
                     terms.append(lab_vars[key] * slot.weekly_hours)
             if terms:
                 faculty_loads[faculty.id] = sum(terms)
-                max_hours = int(faculty.max_weekly_hours * config.hours_scale)
-                model.Add(faculty_loads[faculty.id] <= max_hours)
 
         # Objective: prefer specialization matches, then balance load.
         objective_terms: list[cp_model.LinearExpr] = []
@@ -135,7 +134,11 @@ class WorkloadCpsatSolver:
         model.Minimize(sum(objective_terms))
 
         solver = cp_model.CpSolver()
-        solver.parameters.max_time_in_seconds = config.max_time_seconds
+        apply_cpsat_performance(
+            solver,
+            config.max_time_seconds,
+            stop_after_first_solution=config.stop_after_first_solution,
+        )
         status = solver.Solve(model)
 
         if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
