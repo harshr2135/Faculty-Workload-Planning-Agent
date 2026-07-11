@@ -3,9 +3,19 @@
 from pydantic import BaseModel, Field, model_validator
 
 
+class PecCourseEnrollment(BaseModel):
+    course_code: str = Field(examples=["23AM3605"])
+    student_count: int = Field(ge=0, examples=[42])
+
+
 class BatchSemesterPlan(BaseModel):
     batch_code: str = Field(examples=["2023-27"])
     semester_number: int = Field(ge=1, le=12, examples=[5])
+    pec_enrollments: list[PecCourseEnrollment] = Field(
+        default_factory=list,
+        description="Student counts per PEC elective course. Courses with count 0 "
+        "are excluded from allocation.",
+    )
 
 
 class AllocationRunRequest(BaseModel):
@@ -56,11 +66,19 @@ class AllocationRunRequest(BaseModel):
         return self
 
 
+class PecCourseEnrollmentRead(BaseModel):
+    course_code: str
+    course_name: str = ""
+    course_type: str = ""
+    student_count: int = 0
+
+
 class BatchSemesterPlanRead(BaseModel):
     batch_code: str
     semester_number: int
     section_count: int
     working_days: list[str]
+    pec_enrollments: list[PecCourseEnrollmentRead] = Field(default_factory=list)
 
 
 class PolicyViolationRead(BaseModel):
@@ -80,6 +98,7 @@ class SlotAssignmentRead(BaseModel):
     kind: str
     section_indices: list[int]
     weekly_hours: int
+    lab_sub_batch: str | None = None
     faculty_ids: list[int]
     faculty_names: list[str]
 
@@ -105,6 +124,7 @@ class TimetableEntryRead(BaseModel):
     course_type: str
     kind: str
     section_indices: list[int]
+    lab_sub_batch: str | None = None
     faculty_ids: list[int]
     faculty_names: list[str]
     day: str
@@ -123,6 +143,7 @@ class TimetableGridItemRead(BaseModel):
     course_type: str
     kind: str
     section_indices: list[int]
+    lab_sub_batch: str | None = None
     faculty_names: list[str]
     room_name: str
     room_type: str

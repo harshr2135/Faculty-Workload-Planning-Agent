@@ -125,6 +125,7 @@ export interface AllocationAssignment {
   course_type: string;
   kind: string;
   section_indices: number[];
+  lab_sub_batch?: string | null;
   weekly_hours: number;
   faculty_ids: number[];
   faculty_names: string[];
@@ -142,9 +143,17 @@ export interface FacultyWorkloadSummary {
   lab_session_count: number;
 }
 
+export interface PecCourseEnrollment {
+  course_code: string;
+  course_name?: string;
+  course_type?: string;
+  student_count: number;
+}
+
 export interface BatchSemesterPlanInput {
   batch_code: string;
   semester_number: number;
+  pec_enrollments?: PecCourseEnrollment[];
 }
 
 export interface BatchSemesterPlan {
@@ -152,6 +161,7 @@ export interface BatchSemesterPlan {
   semester_number: number;
   section_count: number;
   working_days: string[];
+  pec_enrollments?: PecCourseEnrollment[];
 }
 
 export interface AllocationRunProgress {
@@ -221,6 +231,7 @@ export interface TimetableGridItem {
   course_type: string;
   kind: string;
   section_indices: number[];
+  lab_sub_batch?: string | null;
   faculty_names: string[];
   room_name: string;
   room_type: string;

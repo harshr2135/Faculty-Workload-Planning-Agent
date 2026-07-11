@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
-import { fetchStudentBatches } from "@/api/courses";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { fetchCourses, fetchStudentBatches } from "@/api/courses";
 import { fetchFaculty } from "@/api/faculty";
 import {
   fetchAllocationRun,
@@ -7,21 +7,29 @@ import {
   runAllocation,
   updateAllocationRun,
 } from "@/api/allocations";
-import type { AllocationAssignment, AllocationRun } from "@/types/api";
+import type { AllocationAssignment, AllocationRun, BatchSemesterPlanInput, Course } from "@/types/api";
 import { EditableAssignmentsTable } from "@/components/EditableAssignmentsTable";
+import {
+  buildPecEnrollmentsPayload,
+  isPecCourseType,
+  PecCourseEnrollments,
+  type PecEnrollmentMap,
+} from "@/components/PecCourseEnrollments";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { LoadingState } from "@/components/ui/LoadingState";
 import { ErrorState } from "@/components/ui/ErrorState";
 import { Badge } from "@/components/ui/Badge";
 import { TimetableGridView } from "@/components/TimetableGridView";
-import { ClassFacultyContactsFooter, buildSectionContactRows } from "@/components/ClassFacultyContactsTable";
+import {
+  ClassFacultyContactsFooter,
+  buildSectionContactGroups,
+} from "@/components/ClassFacultyContactsTable";
 import {
   DataTable,
   DataTableBody,
   DataTableCell,
   DataTableHead,
   DataTableHeaderCell,
-  EmptyRow,
 } from "@/components/ui/DataTable";
 import { useFetch } from "@/hooks/useFetch";
 
@@ -36,6 +44,8 @@ export default function AllocationsPage() {
   const savedPlans = useFetch(fetchAllocationRuns);
   const [selectedBatches, setSelectedBatches] = useState<string[]>([]);
   const [semesterByBatch, setSemesterByBatch] = useState<Record<string, number>>({});
+  const [pecEnrollments, setPecEnrollments] = useState<PecEnrollmentMap>({});
+  const [pecCoursesByBatch, setPecCoursesByBatch] = useState<Record<string, Course[]>>({});
   const [loading, setLoading] = useState(false);
   const [loadPlanLoading, setLoadPlanLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -78,6 +88,44 @@ export default function AllocationsPage() {
     setSemesterByBatch((current) => ({ ...current, [batchCode]: semester }));
   }
 
+  function setPecEnrollment(batchCode: string, courseCode: string, studentCount: number) {
+    setPecEnrollments((current) => ({
+      ...current,
+      [batchCode]: {
+        ...(current[batchCode] ?? {}),
+        [courseCode]: studentCount,
+      },
+    }));
+  }
+
+  const handlePecCoursesLoaded = useCallback((batchCode: string, courses: Course[]) => {
+    setPecCoursesByBatch((current) => {
+      const existing = current[batchCode];
+      if (
+        existing &&
+        existing.length === courses.length &&
+        existing.every((course, index) => course.course_code === courses[index]?.course_code)
+      ) {
+        return current;
+      }
+      return { ...current, [batchCode]: courses };
+    });
+  }, []);
+
+  function restorePecEnrollmentsFromRun(run: AllocationRun) {
+    const next: PecEnrollmentMap = {};
+    for (const plan of run.batch_plans ?? []) {
+      const batchMap: Record<string, number> = {};
+      for (const entry of plan.pec_enrollments ?? []) {
+        batchMap[entry.course_code] = entry.student_count;
+      }
+      if (Object.keys(batchMap).length > 0) {
+        next[plan.batch_code] = batchMap;
+      }
+    }
+    setPecEnrollments(next);
+  }
+
   async function handleRun() {
     if (selectedBatches.length === 0) {
       setError("Select at least one student batch.");
@@ -86,10 +134,25 @@ export default function AllocationsPage() {
     setLoading(true);
     setError(null);
     try {
-      const batch_plans = selectedBatches.map((batch_code) => ({
-        batch_code,
-        semester_number: semesterByBatch[batch_code] ?? 5,
-      }));
+      const batch_plans: BatchSemesterPlanInput[] = await Promise.all(
+        selectedBatches.map(async (batch_code) => {
+          const semester_number = semesterByBatch[batch_code] ?? 5;
+          let pecCourses = pecCoursesByBatch[batch_code];
+          if (!pecCourses) {
+            const rows = await fetchCourses(semester_number, batch_code);
+            pecCourses = rows.filter((course) => isPecCourseType(course.course_type));
+          }
+          return {
+            batch_code,
+            semester_number,
+            pec_enrollments: buildPecEnrollmentsPayload(
+              batch_code,
+              pecCourses,
+              pecEnrollments,
+            ),
+          };
+        }),
+      );
       const run = await runAllocation({
         batch_plans,
         schedule_timetable: true,
@@ -99,6 +162,7 @@ export default function AllocationsPage() {
         return;
       }
       setResult(run);
+      restorePecEnrollmentsFromRun(run);
       savedPlans.reload();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Allocation failed");
@@ -113,6 +177,15 @@ export default function AllocationsPage() {
     try {
       const loaded = await fetchAllocationRun(runId);
       setResult(loaded);
+      restorePecEnrollmentsFromRun(loaded);
+      setSemesterByBatch((current) => {
+        const next = { ...current };
+        for (const plan of loaded.batch_plans ?? []) {
+          next[plan.batch_code] = plan.semester_number;
+        }
+        return next;
+      });
+      setSelectedBatches(loaded.batch_codes ?? []);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not load saved plan.");
     } finally {
@@ -153,40 +226,66 @@ export default function AllocationsPage() {
               Select all
             </button>
           </div>
-          <div className="space-y-2">
-            {(batches.data ?? []).map((batch) => (
-              <div
-                key={batch.batch_code}
-                className="flex flex-wrap items-center gap-3 rounded-md border border-slate-100 px-3 py-2 text-sm"
-              >
-                <label className="inline-flex min-w-[6rem] items-center gap-2 font-medium">
-                  <input
-                    type="checkbox"
-                    checked={selectedBatches.includes(batch.batch_code)}
-                    onChange={() => toggleBatch(batch.batch_code)}
-                  />
-                  {batch.batch_code}
-                </label>
-                <label className="inline-flex items-center gap-2 text-slate-600">
-                  Semester
-                  <select
-                    value={semesterByBatch[batch.batch_code] ?? batch.default_planning_semester}
-                    onChange={(e) => setBatchSemester(batch.batch_code, Number(e.target.value))}
-                    disabled={!selectedBatches.includes(batch.batch_code)}
-                    className="rounded border border-slate-300 bg-white px-2 py-1 disabled:opacity-50"
-                  >
-                    {SEMESTER_OPTIONS.map((n) => (
-                      <option key={n} value={n}>
-                        {n}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <span className="text-xs text-slate-500">
-                  default sem {batch.default_planning_semester}
-                </span>
-              </div>
-            ))}
+          <div className="space-y-3">
+            {(batches.data ?? []).map((batch) => {
+              const isSelected = selectedBatches.includes(batch.batch_code);
+              const semester =
+                semesterByBatch[batch.batch_code] ?? batch.default_planning_semester;
+
+              return (
+                <div
+                  key={batch.batch_code}
+                  className={`rounded-lg border ${
+                    isSelected ? "border-slate-300 bg-white" : "border-slate-100 bg-slate-50/50"
+                  }`}
+                >
+                  <div className="flex flex-wrap items-center gap-3 px-3 py-2.5">
+                    <label className="inline-flex min-w-[6rem] items-center gap-2 font-medium text-slate-900">
+                      <input
+                        type="checkbox"
+                        checked={isSelected}
+                        onChange={() => toggleBatch(batch.batch_code)}
+                      />
+                      {batch.batch_code}
+                    </label>
+                    <label className="inline-flex items-center gap-2 text-slate-600">
+                      Semester
+                      <select
+                        value={semester}
+                        onChange={(e) => setBatchSemester(batch.batch_code, Number(e.target.value))}
+                        disabled={!isSelected}
+                        className="rounded border border-slate-300 bg-white px-2 py-1 disabled:opacity-50"
+                      >
+                        {SEMESTER_OPTIONS.map((n) => (
+                          <option key={n} value={n}>
+                            {n}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <span className="text-xs text-slate-500">
+                      default sem {batch.default_planning_semester}
+                    </span>
+                  </div>
+                  {isSelected && (
+                    <div className="border-t border-slate-200 px-3 py-3">
+                      <PecCourseEnrollments
+                        batchCode={batch.batch_code}
+                        semesterNumber={semester}
+                        enabled={isSelected}
+                        enrollments={pecEnrollments[batch.batch_code] ?? {}}
+                        onChange={(courseCode, studentCount) =>
+                          setPecEnrollment(batch.batch_code, courseCode, studentCount)
+                        }
+                        onCoursesLoaded={(courses) =>
+                          handlePecCoursesLoaded(batch.batch_code, courses)
+                        }
+                      />
+                    </div>
+                  )}
+                </div>
+              );
+            })}
           </div>
         </section>
       )}
@@ -537,11 +636,11 @@ function TimetableResults({
     );
   }, [laboratoryGrids, laboratoryKey]);
 
-  const sectionContactRows = useMemo(() => {
+  const sectionContactGroups = useMemo(() => {
     if (!selectedSectionGrid || !facultyRoster.data) {
       return [];
     }
-    return buildSectionContactRows(
+    return buildSectionContactGroups(
       selectedSectionGrid.batch_code,
       selectedSectionGrid.section_index,
       selectedSectionGrid.semester_number,
@@ -640,7 +739,7 @@ function TimetableResults({
               ) : facultyRoster.error ? (
                 <p className="px-3 py-2 text-xs text-red-600">{facultyRoster.error}</p>
               ) : (
-                <ClassFacultyContactsFooter rows={sectionContactRows} />
+                <ClassFacultyContactsFooter groups={sectionContactGroups} />
               )
             }
           />
@@ -709,7 +808,12 @@ function TimetableResults({
               ))}
             </select>
           </label>
-          <TimetableGridView grid={selectedLaboratoryGrid.grid} compact hideRoom />
+          <TimetableGridView
+            grid={selectedLaboratoryGrid.grid}
+            compact
+            hideRoom
+            showLabFaculty
+          />
         </div>
       )}
     </section>

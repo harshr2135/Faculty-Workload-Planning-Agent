@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 
+from backend.core.domain.course_type_config import supports_lab_practicals
+
 
 class SlotKind(str, Enum):
     THEORY = "theory"
@@ -41,7 +43,7 @@ class CourseInput:
 
     @property
     def has_lab(self) -> bool:
-        return self.practical_hours > 0
+        return supports_lab_practicals(self.course_type, self.practical_hours)
 
 
 @dataclass(frozen=True)
@@ -61,6 +63,8 @@ class AssignmentSlot:
     eligible_faculty_ids: tuple[int, ...]
     specialization_matched_ids: tuple[int, ...]
     fallback_required: bool
+    requires_lecture_hall: bool = False
+    lab_sub_batch: str | None = None
 
 
 @dataclass(frozen=True)

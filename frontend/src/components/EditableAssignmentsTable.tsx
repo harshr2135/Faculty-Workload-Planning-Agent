@@ -80,12 +80,13 @@ export function EditableAssignmentsTable({
         <DataTableHeaderCell>Type</DataTableHeaderCell>
         <DataTableHeaderCell>Kind</DataTableHeaderCell>
         <DataTableHeaderCell>Sections</DataTableHeaderCell>
+        <DataTableHeaderCell>Lab batch</DataTableHeaderCell>
         <DataTableHeaderCell>Hrs/wk</DataTableHeaderCell>
         <DataTableHeaderCell>Faculty</DataTableHeaderCell>
       </DataTableHead>
       <DataTableBody>
         {assignments.length === 0 ? (
-          <EmptyRow colSpan={7} message="No assignments." />
+            <EmptyRow colSpan={8} message="No assignments." />
         ) : (
           assignments.map((row) => (
             <tr key={row.slot_id} className="hover:bg-slate-50">
@@ -97,6 +98,7 @@ export function EditableAssignmentsTable({
               <DataTableCell>{row.course_type}</DataTableCell>
               <DataTableCell>{row.kind}</DataTableCell>
               <DataTableCell>{row.section_indices.join(", ")}</DataTableCell>
+              <DataTableCell>{row.lab_sub_batch ?? "—"}</DataTableCell>
               <DataTableCell>{row.weekly_hours}</DataTableCell>
               <DataTableCell>
                 {editing ? (

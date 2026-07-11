@@ -178,6 +178,7 @@ def build_timetable_grid(
                             course_type=entry.course_type,
                             kind=entry.kind,
                             section_indices=entry.section_indices,
+                            lab_sub_batch=entry.lab_sub_batch,
                             faculty_names=entry.faculty_names,
                             room_name=entry.room_name,
                             room_type=entry.room_type,

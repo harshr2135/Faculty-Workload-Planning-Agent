@@ -17,6 +17,10 @@ from backend.optimization.models.timetable_problem import (
     TimetableSolverConfig,
 )
 from backend.optimization.models.timetable_solution import TimetableSolution
+from backend.optimization.preprocessing.lab_scheduling import (
+    fixed_placement_conflicts_with_event,
+    section_busy_keys,
+)
 
 
 @dataclass(frozen=True)
@@ -70,14 +74,16 @@ class TimetableCpsatSolver:
                 ],
             )
 
+        messages = [
+            "First feasible weekly timetable for all batches (time slots + room assignment)."
+            if config.stop_after_first_solution
+            else "Phase 1: weekly time slots scheduled. Phase 2: rooms assigned greedily."
+        ]
+
         return TimetableSolution(
             status=SolverStatus.FEASIBLE if config.stop_after_first_solution else time_result.status,
             entries=room_entries,
-            messages=[
-                "First feasible weekly timetable for all batches (time slots + room assignment)."
-                if config.stop_after_first_solution
-                else "Phase 1: weekly time slots scheduled. Phase 2: rooms assigned greedily."
-            ],
+            messages=messages,
         )
 
     def _solve_time_slots(
@@ -89,6 +95,9 @@ class TimetableCpsatSolver:
         model = cp_model.CpModel()
         choice_vars: list[list[cp_model.IntVar]] = []
         for event_index, slots in enumerate(slots_by_event):
+            if not slots:
+                choice_vars.append([])
+                continue
             row = [
                 model.NewBoolVar(f"time_{event_index}_{slot_index}")
                 for slot_index in range(len(slots))
@@ -136,6 +145,8 @@ class TimetableCpsatSolver:
 
         assignments: list[TimeSlotAssignment] = []
         for event_index, slots in enumerate(slots_by_event):
+            if not slots:
+                continue
             for slot_index, slot in enumerate(slots):
                 if solver.Value(choice_vars[event_index][slot_index]) != 1:
                     continue
@@ -195,9 +206,10 @@ def _conflicts_with_fixed_time(
             continue
         if set(event.faculty_ids) & set(fixed.faculty_ids):
             return True
-        if (
-            event.batch_code == fixed.batch_code
-            and set(event.section_indices) & set(fixed.section_indices)
+        if fixed_placement_conflicts_with_event(
+            event,
+            batch_code=fixed.batch_code,
+            section_indices=fixed.section_indices,
         ):
             return True
     return False
@@ -223,21 +235,23 @@ def _add_time_conflict_constraints(
             continue
 
         faculty_groups: dict[int, list[cp_model.IntVar]] = {}
-        section_groups: dict[tuple[str, int], list[cp_model.IntVar]] = {}
+        section_groups: dict[tuple[str, int, str], list[tuple[int, cp_model.IntVar]]] = {}
         for event_index, slot_index in literals:
             var = choice_vars[event_index][slot_index]
             event = events[event_index]
             for faculty_id in event.faculty_ids:
                 faculty_groups.setdefault(faculty_id, []).append(var)
             for section_index in event.section_indices:
-                section_groups.setdefault((event.batch_code, section_index), []).append(var)
+                for busy_key in section_busy_keys(event, section_index):
+                    section_groups.setdefault(busy_key, []).append((event_index, var))
 
         for group in faculty_groups.values():
             if len(group) > 1:
                 model.AddAtMostOne(group)
-        for group in section_groups.values():
-            if len(group) > 1:
-                model.AddAtMostOne(group)
+        for members in section_groups.values():
+            if len(members) < 2:
+                continue
+            model.AddAtMostOne([var for _, var in members])
 
 
 def _add_room_capacity_constraints(
@@ -255,6 +269,8 @@ def _add_room_capacity_constraints(
     cell_kind_literals: dict[tuple[str, int, RoomKind], list[cp_model.IntVar]] = {}
     for event_index, slots in enumerate(slots_by_event):
         event = problem.events[event_index]
+        if event.room_kind == RoomKind.NONE:
+            continue
         for slot_index, slot in enumerate(slots):
             var = choice_vars[event_index][slot_index]
             for period_number in slot.period_block:
@@ -308,3 +324,4 @@ def _map_status(status: int) -> SolverStatus:
     if status == cp_model.UNKNOWN:
         return SolverStatus.UNKNOWN
     return SolverStatus.TIMEOUT
+

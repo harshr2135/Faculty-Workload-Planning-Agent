@@ -54,15 +54,26 @@ _PATCH_STATEMENTS: tuple[str, ...] = (
     """
     DO $$
     BEGIN
-        IF NOT EXISTS (
+        IF EXISTS (
             SELECT 1 FROM pg_constraint WHERE conname = 'uq_courses_dept_batch_code'
         ) THEN
-            ALTER TABLE courses
-                ADD CONSTRAINT uq_courses_dept_batch_code
-                UNIQUE (department_id, batch_id, course_code);
+            ALTER TABLE courses DROP CONSTRAINT uq_courses_dept_batch_code;
         END IF;
     END $$
     """,
+    """
+    DO $$
+    BEGIN
+        IF NOT EXISTS (
+            SELECT 1 FROM pg_constraint WHERE conname = 'uq_courses_dept_batch_semester_code'
+        ) THEN
+            ALTER TABLE courses
+                ADD CONSTRAINT uq_courses_dept_batch_semester_code
+                UNIQUE (department_id, batch_id, semester_id, course_code);
+        END IF;
+    END $$
+    """,
+    "UPDATE laboratories SET capacity = 35 WHERE capacity IS NULL OR capacity <> 35",
 )
 
 

@@ -6,6 +6,7 @@ interface TimetableGridProps {
   compact?: boolean;
   hideBatch?: boolean;
   hideRoom?: boolean;
+  showLabFaculty?: boolean;
   showLegend?: boolean;
   footer?: ReactNode;
 }
@@ -45,7 +46,11 @@ const SESSION_LEGEND: SessionStyle[] = [
 ];
 
 function normalizeCourseType(courseType: string): string {
-  return courseType.trim().toUpperCase();
+  const normalized = courseType.trim().toUpperCase().replace(/\s+/g, " ");
+  if (normalized === "PEC" || /^PEC \d+$/.test(normalized)) {
+    return "PEC";
+  }
+  return normalized;
 }
 
 function sessionStyle(item: TimetableGridItem): SessionStyle {
@@ -99,6 +104,7 @@ export function TimetableGridView({
   compact = false,
   hideBatch = false,
   hideRoom = false,
+  showLabFaculty = false,
   showLegend = true,
   footer,
 }: TimetableGridProps) {
@@ -194,14 +200,27 @@ export function TimetableGridView({
                             <span className="font-semibold">{item.course_type}</span>
                             {" · "}
                             Sec {item.section_indices.join(", ")}
+                            {item.lab_sub_batch && ` · ${item.lab_sub_batch}`}
                             {!compact && ` · ${item.kind}`}
                             {(item.col_span ?? 1) > 1 && ` · ${item.period_label}`}
                           </div>
-                          {!hideRoom && (
+                          {!hideRoom && item.room_type !== "none" && (
                             <div className="text-slate-600">{item.room_name}</div>
                           )}
-                          {!compact && (
-                            <div className="text-slate-700">{item.faculty_names.join(" · ")}</div>
+                          {!hideRoom && item.room_type === "none" && (
+                            <div className="text-slate-500 italic">Self-directed</div>
+                          )}
+                          {item.faculty_names.length > 0 &&
+                            (!compact || (showLabFaculty && item.kind === "lab")) && (
+                            <div
+                              className={
+                                item.kind === "lab"
+                                  ? `${style.meta} font-medium ${compact ? "text-[10px]" : ""}`
+                                  : "text-slate-700"
+                              }
+                            >
+                              {item.faculty_names.join(" · ")}
+                            </div>
                           )}
                         </div>
                         );

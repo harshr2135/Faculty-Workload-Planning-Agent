@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from backend.core.domain.course_type_config import uses_lecture_hall
+from backend.core.domain.course_type_config import requires_room_allocation
 from backend.optimization.models.solution import SlotAssignment
 from backend.optimization.models.timetable_problem import RoomKind, ScheduleEvent
 from backend.optimization.preprocessing.period_utils import consecutive_teaching_blocks
@@ -29,6 +29,7 @@ def build_schedule_events(assignments: list[SlotAssignment]) -> list[ScheduleEve
                         course_type=assignment.course_type,
                         kind=assignment.kind,
                         section_indices=tuple(assignment.section_indices),
+                        lab_sub_batch=assignment.lab_sub_batch,
                         faculty_ids=tuple(assignment.faculty_ids),
                         faculty_names=tuple(assignment.faculty_names),
                         duration_periods=1,
@@ -50,6 +51,7 @@ def build_schedule_events(assignments: list[SlotAssignment]) -> list[ScheduleEve
                     course_type=assignment.course_type,
                     kind=assignment.kind,
                     section_indices=tuple(assignment.section_indices),
+                    lab_sub_batch=assignment.lab_sub_batch,
                     faculty_ids=tuple(assignment.faculty_ids),
                     faculty_names=tuple(assignment.faculty_names),
                     duration_periods=duration,
@@ -69,8 +71,10 @@ def build_consecutive_block_index(max_duration: int) -> dict[int, tuple[tuple[in
 
 
 def _room_kind_for_assignment(assignment: SlotAssignment) -> RoomKind:
+    if not requires_room_allocation(assignment.course_name):
+        return RoomKind.NONE
     if assignment.kind == "lab":
         return RoomKind.LABORATORY
-    if uses_lecture_hall(assignment.course_type):
+    if assignment.requires_lecture_hall:
         return RoomKind.LECTURE_HALL
     return RoomKind.CLASSROOM

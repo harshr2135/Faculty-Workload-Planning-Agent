@@ -28,6 +28,8 @@ class SlotAssignment:
     weekly_hours: int
     faculty_ids: list[int]
     faculty_names: list[str]
+    requires_lecture_hall: bool = False
+    lab_sub_batch: str | None = None
 
 
 @dataclass(frozen=True)

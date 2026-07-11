@@ -22,7 +22,7 @@ Rooms allocated to AIML: **508, 509, 510**
 |--------------|----------|---------|
 | *(first column)* | `batch_code` | Student cohort, e.g. `2023-27` |
 | Semester | `semester_number` | 3–7 for AIML |
-| Course Type | `course_type` | IPCC, PCC, PEC, SEC, BSC, HSMC |
+| Course Type | `course_type` | IPCC, PCC, PEC, PEC 1 … PEC 5, SEC, BSC, HSMC |
 | Subject | `name` | Course title |
 | Course Code | `course_code` | Unique per batch |
 | Credits | `credits` | Credit value |
@@ -48,7 +48,7 @@ IPCC courses may still have practical hours (lab in department laboratories).
 
 ```powershell
 # Seeds classrooms, labs, lecture halls, batches, semesters, then imports courses
-python scripts/db/import_courses.py "C:\Users\Jyothi\Downloads\Courses.xlsx" --replace
+python scripts/db/import_courses.py "data/master/Courses.xlsx" --replace
 ```
 
 Use `--replace` when uploading a new catalog to remove old course rows first.

@@ -5,7 +5,7 @@ from __future__ import annotations
 from sqlalchemy import ForeignKey, Integer, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from backend.core.domain.course_type_config import uses_lecture_hall
+from backend.core.domain.course_type_config import supports_lab_practicals, uses_lecture_hall
 from backend.models.base import Base, TimestampMixin
 
 
@@ -15,8 +15,9 @@ class Course(Base, TimestampMixin):
         UniqueConstraint(
             "department_id",
             "batch_id",
+            "semester_id",
             "course_code",
-            name="uq_courses_dept_batch_code",
+            name="uq_courses_dept_batch_semester_code",
         ),
     )
 
@@ -54,7 +55,7 @@ class Course(Base, TimestampMixin):
 
     @property
     def has_lab(self) -> bool:
-        return self.practical_hours > 0
+        return supports_lab_practicals(self.course_type, self.practical_hours)
 
     @property
     def requires_lecture_hall(self) -> bool:

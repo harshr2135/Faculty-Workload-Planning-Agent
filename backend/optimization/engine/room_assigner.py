@@ -50,6 +50,33 @@ def assign_rooms_greedy(
     entries: list[TimetableEntry] = []
     for assignment in ordered:
         event = problem.events[assignment.event_index]
+        if event.room_kind == RoomKind.NONE:
+            first = period_lookup[assignment.period_block[0]]
+            last = period_lookup[assignment.period_block[-1]]
+            entries.append(
+                TimetableEntry(
+                    event_id=event.event_id,
+                    slot_id=event.slot_id,
+                    batch_code=event.batch_code,
+                    course_code=event.course_code,
+                    course_name=event.course_name,
+                    course_type=event.course_type,
+                    kind=event.kind,
+                    section_indices=list(event.section_indices),
+                    lab_sub_batch=event.lab_sub_batch,
+                    faculty_ids=list(event.faculty_ids),
+                    faculty_names=list(event.faculty_names),
+                    day=assignment.day,
+                    period_numbers=list(assignment.period_block),
+                    period_label=period_window_label(assignment.period_block),
+                    room_type=RoomKind.NONE.value,
+                    room_name="—",
+                    start_time=first.start_time,
+                    end_time=last.end_time,
+                )
+            )
+            continue
+
         rooms = _rooms_for_kind(problem, event.room_kind)
         chosen: RoomInput | None = None
         for room in rooms:
@@ -74,6 +101,7 @@ def assign_rooms_greedy(
                 course_type=event.course_type,
                 kind=event.kind,
                 section_indices=list(event.section_indices),
+                lab_sub_batch=event.lab_sub_batch,
                 faculty_ids=list(event.faculty_ids),
                 faculty_names=list(event.faculty_names),
                 day=assignment.day,
@@ -119,6 +147,8 @@ def _room_kind_for_id(problem: TimetableProblem, room_id: int) -> str | None:
 
 
 def _rooms_for_kind(problem: TimetableProblem, kind: RoomKind) -> list[RoomInput]:
+    if kind == RoomKind.NONE:
+        return []
     if kind == RoomKind.LECTURE_HALL:
         return list(problem.lecture_halls)
     if kind == RoomKind.LABORATORY:

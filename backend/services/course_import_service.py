@@ -238,8 +238,9 @@ class CourseImportService:
             course_result = await session.execute(
                 select(Course).where(
                     Course.department_id == department.id,
+                    Course.batch_id == batch.id,
+                    Course.semester_id == semester.id,
                     Course.course_code == row.course_code,
-                    (Course.batch_id == batch.id) | (Course.batch_id.is_(None)),
                 )
             )
             course = course_result.scalar_one_or_none()

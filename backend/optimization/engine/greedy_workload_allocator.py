@@ -100,8 +100,10 @@ class GreedyWorkloadAllocator:
                     kind=slot.kind.value,
                     section_indices=list(slot.section_indices),
                     weekly_hours=slot.weekly_hours,
+                    lab_sub_batch=slot.lab_sub_batch,
                     faculty_ids=assigned_ids,
                     faculty_names=[faculty_by_id[fid].full_name for fid in assigned_ids],
+                    requires_lecture_hall=slot.requires_lecture_hall,
                 )
             )
 

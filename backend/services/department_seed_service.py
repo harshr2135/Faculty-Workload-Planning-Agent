@@ -16,6 +16,7 @@ from backend.core.domain.aiml_config import (
     LECTURE_HALL_NAMES,
     STUDENT_BATCH_CODES,
 )
+from backend.core.domain.lab_config import LAB_MAX_CAPACITY
 from backend.models import AcademicYearLevel, Classroom, Department, Laboratory, LectureHall, Semester, StudentBatch
 
 
@@ -85,8 +86,18 @@ class DepartmentSeedService:
                 )
             )
             if exists is None:
-                session.add(Laboratory(department_id=department_id, room_number=room_number))
+                session.add(
+                    Laboratory(
+                        department_id=department_id,
+                        room_number=room_number,
+                        capacity=LAB_MAX_CAPACITY,
+                    )
+                )
                 created += 1
+            else:
+                row = await session.get(Laboratory, exists)
+                if row is not None and row.capacity is None:
+                    row.capacity = LAB_MAX_CAPACITY
         await session.flush()
         return created
 

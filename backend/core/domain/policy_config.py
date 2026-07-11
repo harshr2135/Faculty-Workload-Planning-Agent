@@ -94,6 +94,36 @@ PLANNING_POLICY_DEFINITIONS: list[tuple[str, str, str | None]] = [
         "Each laboratory session must have exactly two faculty members allocated.",
     ),
     (
+        "lab_max_capacity",
+        "35",
+        "Maximum students per laboratory session (AIML lab rooms).",
+    ),
+    (
+        "lab_sub_batches",
+        "B1,B2",
+        "Each section is split into two lab sub-batches (B1 and B2) for practical sessions.",
+    ),
+    (
+        "lab_session_hours",
+        "2",
+        "Each lab sub-batch receives one 2-hour continuous session per week.",
+    ),
+    (
+        "lab_sub_batches_required",
+        "enabled",
+        "Both B1 and B2 sub-batches must receive one 2-hour lab session per week for each lab course.",
+    ),
+    (
+        "lab_parallel_sub_batches",
+        "enabled",
+        "B1 and B2 from the same section may attend different lab subjects at the same time.",
+    ),
+    (
+        "sec_no_lab",
+        "enabled",
+        "SEC (Skill Enhancement Course) subjects are theory-only; no laboratory sessions.",
+    ),
+    (
         "theory_hours_spread_rule",
         "enabled",
         "Weekly lecture hours may be spread across the working days for that student year.",
@@ -115,9 +145,27 @@ PLANNING_POLICY_DEFINITIONS: list[tuple[str, str, str | None]] = [
         "PEC and SEC sessions combine at most three sections from the same batch in a lecture hall.",
     ),
     (
+        "pec_lecture_hall_student_threshold",
+        "150",
+        "PEC electives with more than 150 enrolled students are scheduled in lecture halls; "
+        "otherwise department classrooms.",
+    ),
+    (
+        "pec_parallel_pool_timing",
+        "disabled",
+        "When enabled, all active electives in the same PEC pool (e.g. PEC 2) are scheduled "
+        "at the same time. Currently disabled.",
+    ),
+    (
+        "roomless_course_delivery",
+        "UG Research Project",
+        "Courses listed here are scheduled without reserving a classroom or lab "
+        "(students work independently).",
+    ),
+    (
         "pec_sec_lecture_hall_delivery",
         "enabled",
-        "PEC and SEC course types are scheduled in college lecture halls (not department classrooms).",
+        "SEC courses always use lecture halls; PEC room choice depends on enrollment.",
     ),
 ]
 

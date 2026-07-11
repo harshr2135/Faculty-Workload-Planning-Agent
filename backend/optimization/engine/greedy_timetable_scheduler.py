@@ -11,6 +11,10 @@ from backend.optimization.models.timetable_problem import (
     TimetableProblem,
 )
 from backend.optimization.models.timetable_solution import TimetableEntry, TimetableSolution
+from backend.optimization.preprocessing.lab_scheduling import (
+    fixed_placement_conflicts_with_event,
+    section_busy_keys,
+)
 from backend.optimization.preprocessing.period_utils import period_window_label
 
 
@@ -24,7 +28,7 @@ class GreedyTimetableScheduler:
 
         period_lookup = {info.period_number: info for info in problem.period_info}
         faculty_busy: set[tuple[str, int, int]] = set()
-        section_busy: set[tuple[str, int, str, int]] = set()
+        section_busy: set[tuple[str, int, str, int, str]] = set()
         room_busy: set[tuple[str, int, str, int]] = set()
         theory_days_by_slot: dict[str, set[str]] = {}
 
@@ -35,6 +39,7 @@ class GreedyTimetableScheduler:
                 event.batch_code,
                 event.course_code,
                 event.kind,
+                event.lab_sub_batch or "",
                 event.session_index,
                 event.event_id,
             ),
@@ -84,13 +89,14 @@ class GreedyTimetableScheduler:
                     course_type=event.course_type,
                     kind=event.kind,
                     section_indices=list(event.section_indices),
+                    lab_sub_batch=event.lab_sub_batch,
                     faculty_ids=list(event.faculty_ids),
                     faculty_names=list(event.faculty_names),
                     day=day,
                     period_numbers=list(period_block),
                     period_label=period_window_label(period_block),
-                    room_type=room.kind.value,
-                    room_name=room.name,
+                    room_type=room.kind.value if room is not None else RoomKind.NONE.value,
+                    room_name=room.name if room is not None else "—",
                     start_time=first.start_time,
                     end_time=last.end_time,
                 )
@@ -105,10 +111,11 @@ class GreedyTimetableScheduler:
                 row.course_code,
             )
         )
+        messages = ["Greedy timetable: first available slot across all batches."]
         return TimetableSolution(
             status=SolverStatus.FEASIBLE,
             entries=entries,
-            messages=["Greedy timetable: first available slot across all batches."],
+            messages=messages,
         )
 
     def _first_free_placement(
@@ -117,13 +124,16 @@ class GreedyTimetableScheduler:
         event: ScheduleEvent,
         period_lookup: dict[int, PeriodInfo],
         faculty_busy: set[tuple[str, int, int]],
-        section_busy: set[tuple[str, int, str, int]],
+        section_busy: set[tuple[str, int, str, int, str]],
         room_busy: set[tuple[str, int, str, int]],
         theory_days_by_slot: dict[str, set[str]],
-    ) -> tuple[str, tuple[int, ...], RoomInput] | None:
+    ) -> tuple[str, tuple[int, ...], RoomInput | None] | None:
         blocks = problem.consecutive_blocks.get(event.duration_periods, ())
-        rooms = _rooms_for_kind(problem, event.room_kind)
-        if not blocks or not rooms:
+        if not blocks:
+            return None
+        roomless = event.room_kind == RoomKind.NONE
+        rooms = [] if roomless else _rooms_for_kind(problem, event.room_kind)
+        if not roomless and not rooms:
             return None
 
         days = list(event.working_days or problem.working_days)
@@ -152,6 +162,8 @@ class GreedyTimetableScheduler:
                     section_busy,
                 ):
                     continue
+                if roomless:
+                    return day, block, None
                 for room in rooms:
                     if self._room_conflict(day, block, room, room_busy):
                         continue
@@ -164,15 +176,16 @@ class GreedyTimetableScheduler:
         day: str,
         period_block: tuple[int, ...],
         faculty_busy: set[tuple[str, int, int]],
-        section_busy: set[tuple[str, int, str, int]],
+        section_busy: set[tuple[str, int, str, int, str]],
     ) -> bool:
         for period in period_block:
             for faculty_id in event.faculty_ids:
                 if (day, period, faculty_id) in faculty_busy:
                     return True
             for section_index in event.section_indices:
-                if (day, period, event.batch_code, section_index) in section_busy:
-                    return True
+                for busy_key in section_busy_keys(event, section_index):
+                    if (day, period, busy_key[0], busy_key[1], busy_key[2]) in section_busy:
+                        return True
         return False
 
     def _room_conflict(
@@ -191,20 +204,24 @@ class GreedyTimetableScheduler:
         event: ScheduleEvent,
         day: str,
         period_block: tuple[int, ...],
-        room: RoomInput,
+        room: RoomInput | None,
         faculty_busy: set[tuple[str, int, int]],
-        section_busy: set[tuple[str, int, str, int]],
+        section_busy: set[tuple[str, int, str, int, str]],
         room_busy: set[tuple[str, int, str, int]],
     ) -> None:
         for period in period_block:
             for faculty_id in event.faculty_ids:
                 faculty_busy.add((day, period, faculty_id))
             for section_index in event.section_indices:
-                section_busy.add((day, period, event.batch_code, section_index))
-            room_busy.add((day, period, room.kind.value, room.id))
+                for busy_key in section_busy_keys(event, section_index):
+                    section_busy.add((day, period, busy_key[0], busy_key[1], busy_key[2]))
+            if room is not None:
+                room_busy.add((day, period, room.kind.value, room.id))
 
 
 def _rooms_for_kind(problem: TimetableProblem, kind: RoomKind) -> list[RoomInput]:
+    if kind == RoomKind.NONE:
+        return []
     if kind == RoomKind.LECTURE_HALL:
         return list(problem.lecture_halls)
     if kind == RoomKind.LABORATORY:

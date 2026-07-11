@@ -10,6 +10,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from backend.core.domain.aiml_config import DEPARTMENT_NAME, WEEKDAYS_MON_FRI
+from backend.core.domain.course_type_config import is_pec_course_type
+from backend.core.domain.course_type_config import requires_room_allocation
+from backend.core.domain.pec_config import delivery_requires_lecture_hall
 from backend.core.domain.batch_planning import default_batch_plans
 from backend.core.domain.policy_config import LAB_FACULTY_PER_SESSION, UNLIMITED_MAX_WEEKLY_HOURS, resolve_designation_key
 from backend.models import (
@@ -60,6 +63,7 @@ from backend.schemas.allocation import (
     BatchSemesterPlanRead,
     FacultyTimetableGridRead,
     FacultyWorkloadSummaryRead,
+    PecCourseEnrollmentRead,
     PolicyViolationRead,
     RoomTimetableGridRead,
     SectionTimetableGridRead,
@@ -127,12 +131,23 @@ class AllocationService:
             semester_id=primary_semester.id,
             status=workload_solution.status.value,
             objective_value=workload_solution.objective_value,
-            solution=_solution_to_dict(problem, workload_solution, timetable_solution),
+            solution=_solution_to_dict(
+                problem,
+                workload_solution,
+                timetable_solution,
+                resolved_plans=resolved_plans,
+            ),
         )
         session.add(run)
         await session.flush()
 
-        return _to_read_model(run, problem, workload_solution, timetable_solution)
+        return _to_read_model(
+            run,
+            problem,
+            workload_solution,
+            timetable_solution,
+            resolved_plans=resolved_plans,
+        )
 
     async def get_run(self, session: AsyncSession, run_id: int) -> AllocationRunRead | None:
         result = await session.execute(
@@ -404,7 +419,18 @@ class AllocationService:
                     "Import Courses.xlsx first."
                 )
 
+            pec_counts = _pec_enrollment_counts(plan)
+
             for course in batch_courses:
+                if not _include_course_for_plan(course, plan):
+                    continue
+                student_count = pec_counts.get(course.course_code.strip().upper(), 0)
+                needs_lecture_hall = delivery_requires_lecture_hall(
+                    course.course_type,
+                    student_count,
+                )
+                if not requires_room_allocation(course.name):
+                    needs_lecture_hall = False
                 course_inputs.append(
                     CourseInput(
                         id=course.id,
@@ -417,7 +443,7 @@ class AllocationService:
                         course_type=course.course_type,
                         lectures_per_week=course.lectures_per_week,
                         practical_hours=course.practical_hours,
-                        requires_lecture_hall=course.requires_lecture_hall,
+                        requires_lecture_hall=needs_lecture_hall,
                     )
                 )
 
@@ -483,6 +509,41 @@ class AllocationService:
         return problem, primary_batch, primary_semester
 
 
+def _pec_enrollment_counts(plan: BatchSemesterPlan) -> dict[str, int]:
+    return {
+        entry.course_code.strip().upper(): entry.student_count
+        for entry in plan.pec_enrollments
+    }
+
+
+def _include_course_for_plan(course: Course, plan: BatchSemesterPlan) -> bool:
+    """Non-PEC courses always run; PEC electives only when student_count > 0."""
+    if not is_pec_course_type(course.course_type):
+        return True
+    if not plan.pec_enrollments:
+        return True
+    return _pec_enrollment_counts(plan).get(course.course_code.strip().upper(), 0) > 0
+
+
+def _pec_enrollment_reads(
+    batch_code: str,
+    semester_number: int,
+    resolved_plans: list[BatchSemesterPlan] | None,
+) -> list[PecCourseEnrollmentRead]:
+    if not resolved_plans:
+        return []
+    for plan in resolved_plans:
+        if plan.batch_code == batch_code and plan.semester_number == semester_number:
+            return [
+                PecCourseEnrollmentRead(
+                    course_code=entry.course_code.strip().upper(),
+                    student_count=entry.student_count,
+                )
+                for entry in plan.pec_enrollments
+            ]
+    return []
+
+
 def _union_working_days(batch_plans: tuple[BatchPlanInput, ...]) -> tuple[str, ...]:
     ordered: list[str] = []
     seen: set[str] = set()
@@ -493,14 +554,45 @@ def _union_working_days(batch_plans: tuple[BatchPlanInput, ...]) -> tuple[str, .
     return tuple(ordered) if ordered else tuple(WEEKDAYS_MON_FRI)
 
 
-def _batch_plan_reads(problem: WorkloadProblem) -> list[BatchSemesterPlanRead]:
+def _batch_plan_reads(
+    problem: WorkloadProblem,
+    resolved_plans: list[BatchSemesterPlan] | None = None,
+) -> list[BatchSemesterPlanRead]:
     return [
         BatchSemesterPlanRead(
             batch_code=plan.batch_code,
             semester_number=plan.semester_number,
             section_count=plan.section_count,
             working_days=list(plan.working_days),
+            pec_enrollments=_pec_enrollment_reads(
+                plan.batch_code,
+                plan.semester_number,
+                resolved_plans,
+            ),
         )
+        for plan in problem.batch_plans
+    ]
+
+
+def _batch_plans_for_storage(
+    problem: WorkloadProblem,
+    resolved_plans: list[BatchSemesterPlan] | None = None,
+) -> list[dict]:
+    return [
+        {
+            "batch_code": plan.batch_code,
+            "semester_number": plan.semester_number,
+            "section_count": plan.section_count,
+            "working_days": list(plan.working_days),
+            "pec_enrollments": [
+                entry.model_dump()
+                for entry in _pec_enrollment_reads(
+                    plan.batch_code,
+                    plan.semester_number,
+                    resolved_plans,
+                )
+            ],
+        }
         for plan in problem.batch_plans
     ]
 
@@ -509,10 +601,11 @@ def _solution_to_dict(
     problem: WorkloadProblem,
     workload: OptimizationSolution,
     timetable: TimetableSolution | None,
+    resolved_plans: list[BatchSemesterPlan] | None = None,
 ) -> dict:
     return {
         "run_state": "completed",
-        "batch_plans": [asdict(plan) for plan in problem.batch_plans],
+        "batch_plans": _batch_plans_for_storage(problem, resolved_plans),
         "batch_codes": [plan.batch_code for plan in problem.batch_plans],
         "status": workload.status.value,
         "objective_value": workload.objective_value,
@@ -604,12 +697,13 @@ def _to_read_model(
     problem: WorkloadProblem,
     workload: OptimizationSolution,
     timetable: TimetableSolution | None,
+    resolved_plans: list[BatchSemesterPlan] | None = None,
 ) -> AllocationRunRead:
     timetable_entries = _timetable_entries_from_solution(timetable)
     faculty_summaries = [
         FacultyWorkloadSummaryRead(**asdict(s)) for s in workload.faculty_summaries
     ]
-    batch_plans = _batch_plan_reads(problem)
+    batch_plans = _batch_plan_reads(problem, resolved_plans)
     timetable_grid, faculty_timetable_grids, section_timetable_grids, classroom_timetable_grids, laboratory_timetable_grids = _timetable_views(
         timetable_entries,
         faculty_summaries,

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from backend.core.domain.course_type_config import uses_lecture_hall
+from backend.core.domain.lab_config import LAB_SESSION_HOURS, LAB_SUB_BATCHES
 from backend.optimization.models.problem_definition import AssignmentSlot, CourseInput, SlotKind
 
 
@@ -50,7 +50,7 @@ def build_assignment_slots(
         fallback = fallback_flags.get(course.id, False)
         section_count = course.section_count
 
-        if uses_lecture_hall(course.course_type):
+        if course.requires_lecture_hall:
             groups = build_section_groups(
                 section_count,
                 min_size=lecture_hall_min_sections,
@@ -72,6 +72,7 @@ def build_assignment_slots(
                         eligible_faculty_ids=eligible,
                         specialization_matched_ids=matched,
                         fallback_required=fallback,
+                        requires_lecture_hall=True,
                     )
                 )
         else:
@@ -91,27 +92,31 @@ def build_assignment_slots(
                         eligible_faculty_ids=eligible,
                         specialization_matched_ids=matched,
                         fallback_required=fallback,
+                        requires_lecture_hall=False,
                     )
                 )
 
         if course.has_lab:
+            lab_hours = max(LAB_SESSION_HOURS, course.practical_hours)
             for section in range(1, section_count + 1):
-                slots.append(
-                    AssignmentSlot(
-                        slot_id=f"{course.batch_code}-{course.course_code}-L-S{section}",
-                        course_id=course.id,
-                        batch_code=course.batch_code,
-                        working_days=course.working_days,
-                        course_code=course.course_code,
-                        course_name=course.name,
-                        course_type=course.course_type,
-                        kind=SlotKind.LAB,
-                        section_indices=(section,),
-                        weekly_hours=course.practical_hours,
-                        eligible_faculty_ids=eligible,
-                        specialization_matched_ids=matched,
-                        fallback_required=fallback,
+                for sub_batch in LAB_SUB_BATCHES:
+                    slots.append(
+                        AssignmentSlot(
+                            slot_id=f"{course.batch_code}-{course.course_code}-L-S{section}-{sub_batch}",
+                            course_id=course.id,
+                            batch_code=course.batch_code,
+                            working_days=course.working_days,
+                            course_code=course.course_code,
+                            course_name=course.name,
+                            course_type=course.course_type,
+                            kind=SlotKind.LAB,
+                            section_indices=(section,),
+                            weekly_hours=lab_hours,
+                            lab_sub_batch=sub_batch,
+                            eligible_faculty_ids=eligible,
+                            specialization_matched_ids=matched,
+                            fallback_required=fallback,
+                        )
                     )
-                )
 
     return slots

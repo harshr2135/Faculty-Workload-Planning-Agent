@@ -10,6 +10,7 @@ class RoomKind(str, Enum):
     CLASSROOM = "classroom"
     LECTURE_HALL = "lecture_hall"
     LABORATORY = "laboratory"
+    NONE = "none"
 
 
 @dataclass(frozen=True)
@@ -46,6 +47,7 @@ class ScheduleEvent:
     duration_periods: int
     room_kind: RoomKind
     session_index: int = 0
+    lab_sub_batch: str | None = None
 
 
 @dataclass(frozen=True)

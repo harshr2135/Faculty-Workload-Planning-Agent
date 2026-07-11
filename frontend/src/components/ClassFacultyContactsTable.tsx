@@ -5,15 +5,7 @@ import type {
   FacultyMember,
 } from "@/types/api";
 
-export interface ClassFacultyContactRow {
-  batch_code: string;
-  section_index: number;
-  semester_number: number;
-  course_code: string;
-  course_name: string;
-  course_type: string;
-  kind: string;
-  weekly_hours: number;
+export interface ClassFacultyContactFacultyDetail {
   faculty_id: number | null;
   faculty_name: string;
   designation: string | null;
@@ -22,31 +14,49 @@ export interface ClassFacultyContactRow {
   cabin_number: string | null;
 }
 
-function assignmentToContactRows(
+export interface ClassFacultyContactGroup {
+  batch_code: string;
+  section_index: number;
+  semester_number: number;
+  course_code: string;
+  course_name: string;
+  course_type: string;
+  kind: string;
+  weekly_hours: number;
+  lab_sub_batch: string | null;
+  faculty: ClassFacultyContactFacultyDetail[];
+}
+
+/** @deprecated Use ClassFacultyContactGroup for grouped rendering. */
+export interface ClassFacultyContactRow extends ClassFacultyContactFacultyDetail {
+  batch_code: string;
+  section_index: number;
+  semester_number: number;
+  course_code: string;
+  course_name: string;
+  course_type: string;
+  kind: string;
+  weekly_hours: number;
+  lab_sub_batch: string | null;
+}
+
+function assignmentToContactGroup(
   assignment: AllocationAssignment,
   batchCode: string,
   sectionIndex: number,
   semesterNumber: number,
   facultyById: Map<number, FacultyMember>,
-): ClassFacultyContactRow[] {
+): ClassFacultyContactGroup {
   const facultyIds = assignment.faculty_ids ?? [];
   const facultyNames = assignment.faculty_names ?? [];
   const pairCount = Math.max(facultyIds.length, facultyNames.length, 1);
 
-  return Array.from({ length: pairCount }, (_, index) => {
+  const faculty = Array.from({ length: pairCount }, (_, index) => {
     const facultyId = facultyIds[index] ?? null;
     const member = facultyId !== null ? facultyById.get(facultyId) : undefined;
     const facultyName = facultyNames[index] ?? member?.full_name ?? "—";
 
     return {
-      batch_code: batchCode,
-      section_index: sectionIndex,
-      semester_number: semesterNumber,
-      course_code: assignment.course_code,
-      course_name: assignment.course_name,
-      course_type: assignment.course_type,
-      kind: assignment.kind,
-      weekly_hours: assignment.weekly_hours,
       faculty_id: facultyId,
       faculty_name: facultyName,
       designation: member?.designation ?? null,
@@ -55,10 +65,23 @@ function assignmentToContactRows(
       cabin_number: member?.cabin_number ?? null,
     };
   });
+
+  return {
+    batch_code: batchCode,
+    section_index: sectionIndex,
+    semester_number: semesterNumber,
+    course_code: assignment.course_code,
+    course_name: assignment.course_name,
+    course_type: assignment.course_type,
+    kind: assignment.kind,
+    lab_sub_batch: assignment.lab_sub_batch ?? null,
+    weekly_hours: assignment.weekly_hours,
+    faculty,
+  };
 }
 
-function sortContactRows(rows: ClassFacultyContactRow[]): ClassFacultyContactRow[] {
-  return [...rows].sort((left, right) => {
+function sortContactGroups(groups: ClassFacultyContactGroup[]): ClassFacultyContactGroup[] {
+  return [...groups].sort((left, right) => {
     const courseCompare = left.course_code.localeCompare(right.course_code);
     if (courseCompare !== 0) {
       return courseCompare;
@@ -67,25 +90,31 @@ function sortContactRows(rows: ClassFacultyContactRow[]): ClassFacultyContactRow
     if (kindCompare !== 0) {
       return kindCompare;
     }
-    return left.faculty_name.localeCompare(right.faculty_name);
+    const batchCompare = (left.lab_sub_batch ?? "").localeCompare(right.lab_sub_batch ?? "");
+    if (batchCompare !== 0) {
+      return batchCompare;
+    }
+    const leftName = left.faculty[0]?.faculty_name ?? "";
+    const rightName = right.faculty[0]?.faculty_name ?? "";
+    return leftName.localeCompare(rightName);
   });
 }
 
-export function buildSectionContactRows(
+export function buildSectionContactGroups(
   batchCode: string,
   sectionIndex: number,
   semesterNumber: number,
   assignments: AllocationAssignment[],
   facultyById: Map<number, FacultyMember>,
-): ClassFacultyContactRow[] {
-  const rows = assignments
+): ClassFacultyContactGroup[] {
+  const groups = assignments
     .filter(
       (assignment) =>
         assignment.batch_code === batchCode &&
         assignment.section_indices.includes(sectionIndex),
     )
-    .flatMap((assignment) =>
-      assignmentToContactRows(
+    .map((assignment) =>
+      assignmentToContactGroup(
         assignment,
         batchCode,
         sectionIndex,
@@ -94,17 +123,47 @@ export function buildSectionContactRows(
       ),
     );
 
-  return sortContactRows(rows);
+  return sortContactGroups(groups);
 }
 
-export function buildClassFacultyContactRows(
+/** @deprecated Use buildSectionContactGroups for merged multi-faculty rows. */
+export function buildSectionContactRows(
+  batchCode: string,
+  sectionIndex: number,
+  semesterNumber: number,
+  assignments: AllocationAssignment[],
+  facultyById: Map<number, FacultyMember>,
+): ClassFacultyContactRow[] {
+  return buildSectionContactGroups(
+    batchCode,
+    sectionIndex,
+    semesterNumber,
+    assignments,
+    facultyById,
+  ).flatMap((group) =>
+    group.faculty.map((member) => ({
+      batch_code: group.batch_code,
+      section_index: group.section_index,
+      semester_number: group.semester_number,
+      course_code: group.course_code,
+      course_name: group.course_name,
+      course_type: group.course_type,
+      kind: group.kind,
+      weekly_hours: group.weekly_hours,
+      lab_sub_batch: group.lab_sub_batch,
+      ...member,
+    })),
+  );
+}
+
+export function buildClassFacultyContactGroups(
   assignments: AllocationAssignment[],
   batchPlans: BatchSemesterPlan[],
   facultyById: Map<number, FacultyMember>,
-): ClassFacultyContactRow[] {
-  const rows = batchPlans.flatMap((plan) =>
+): ClassFacultyContactGroup[] {
+  const groups = batchPlans.flatMap((plan) =>
     Array.from({ length: plan.section_count }, (_, index) =>
-      buildSectionContactRows(
+      buildSectionContactGroups(
         plan.batch_code,
         index + 1,
         plan.semester_number,
@@ -114,7 +173,7 @@ export function buildClassFacultyContactRows(
     ).flat(),
   );
 
-  return rows.sort((left, right) => {
+  return groups.sort((left, right) => {
     const batchCompare = left.batch_code.localeCompare(right.batch_code);
     if (batchCompare !== 0) {
       return batchCompare;
@@ -126,17 +185,19 @@ export function buildClassFacultyContactRows(
     if (courseCompare !== 0) {
       return courseCompare;
     }
-    return left.faculty_name.localeCompare(right.faculty_name);
+    const leftName = left.faculty[0]?.faculty_name ?? "";
+    const rightName = right.faculty[0]?.faculty_name ?? "";
+    return leftName.localeCompare(rightName);
   });
 }
 
 interface ClassFacultyContactsFooterProps {
-  rows: ClassFacultyContactRow[];
+  groups: ClassFacultyContactGroup[];
 }
 
 /** Compact faculty table meant to sit directly under the timetable grid. */
-export function ClassFacultyContactsFooter({ rows }: ClassFacultyContactsFooterProps) {
-  if (rows.length === 0) {
+export function ClassFacultyContactsFooter({ groups }: ClassFacultyContactsFooterProps) {
+  if (groups.length === 0) {
     return null;
   }
 
@@ -148,7 +209,11 @@ export function ClassFacultyContactsFooter({ rows }: ClassFacultyContactsFooterP
           <th className="border border-slate-300 px-2 py-1.5 text-left font-semibold">
             Course code
           </th>
+          <th className="border border-slate-300 px-2 py-1.5 text-left font-semibold">
+            Course type
+          </th>
           <th className="border border-slate-300 px-2 py-1.5 text-left font-semibold">Session</th>
+          <th className="border border-slate-300 px-2 py-1.5 text-left font-semibold">Lab batch</th>
           <th className="border border-slate-300 px-2 py-1.5 text-left font-semibold">Faculty</th>
           <th className="border border-slate-300 px-2 py-1.5 text-left font-semibold">
             Designation
@@ -159,29 +224,67 @@ export function ClassFacultyContactsFooter({ rows }: ClassFacultyContactsFooterP
         </tr>
       </thead>
       <tbody>
-        {rows.map((row) => (
-          <tr
-            key={`${row.course_code}-${row.kind}-${row.faculty_id ?? row.faculty_name}`}
-            className="bg-white hover:bg-slate-50"
-          >
-            <td className="border border-slate-300 px-2 py-1.5">{row.course_name}</td>
-            <td className="border border-slate-300 px-2 py-1.5 font-mono">{row.course_code}</td>
-            <td className="border border-slate-300 px-2 py-1.5 capitalize">{row.kind}</td>
-            <td className="border border-slate-300 px-2 py-1.5 font-medium">{row.faculty_name}</td>
-            <td className="border border-slate-300 px-2 py-1.5">{row.designation ?? "—"}</td>
-            <td className="border border-slate-300 px-2 py-1.5">
-              {row.email ? (
-                <a href={`mailto:${row.email}`} className="text-sky-700 hover:underline">
-                  {row.email}
-                </a>
-              ) : (
-                "—"
+        {groups.map((group) => {
+          const groupKey = `${group.course_code}-${group.kind}-${group.lab_sub_batch ?? ""}`;
+          const rowSpan = group.faculty.length;
+
+          return group.faculty.map((member, index) => (
+            <tr
+              key={`${groupKey}-${member.faculty_id ?? member.faculty_name}-${index}`}
+              className="bg-white hover:bg-slate-50"
+            >
+              {index === 0 && (
+                <>
+                  <td
+                    rowSpan={rowSpan}
+                    className="border border-slate-300 px-2 py-1.5 align-middle"
+                  >
+                    {group.course_name}
+                  </td>
+                  <td
+                    rowSpan={rowSpan}
+                    className="border border-slate-300 px-2 py-1.5 align-middle font-mono"
+                  >
+                    {group.course_code}
+                  </td>
+                  <td
+                    rowSpan={rowSpan}
+                    className="border border-slate-300 px-2 py-1.5 align-middle font-medium text-slate-700"
+                  >
+                    {group.course_type}
+                  </td>
+                  <td
+                    rowSpan={rowSpan}
+                    className="border border-slate-300 px-2 py-1.5 align-middle capitalize"
+                  >
+                    {group.kind}
+                  </td>
+                  <td
+                    rowSpan={rowSpan}
+                    className="border border-slate-300 px-2 py-1.5 align-middle"
+                  >
+                    {group.lab_sub_batch ?? "—"}
+                  </td>
+                </>
               )}
-            </td>
-            <td className="border border-slate-300 px-2 py-1.5">{row.phone ?? "—"}</td>
-            <td className="border border-slate-300 px-2 py-1.5">{row.cabin_number ?? "—"}</td>
-          </tr>
-        ))}
+              <td className="border border-slate-300 px-2 py-1.5 font-medium">
+                {member.faculty_name}
+              </td>
+              <td className="border border-slate-300 px-2 py-1.5">{member.designation ?? "—"}</td>
+              <td className="border border-slate-300 px-2 py-1.5">
+                {member.email ? (
+                  <a href={`mailto:${member.email}`} className="text-sky-700 hover:underline">
+                    {member.email}
+                  </a>
+                ) : (
+                  "—"
+                )}
+              </td>
+              <td className="border border-slate-300 px-2 py-1.5">{member.phone ?? "—"}</td>
+              <td className="border border-slate-300 px-2 py-1.5">{member.cabin_number ?? "—"}</td>
+            </tr>
+          ));
+        })}
       </tbody>
     </table>
   );
@@ -207,9 +310,9 @@ export function SectionFacultyContactsFooter({
     [faculty],
   );
 
-  const rows = useMemo(
+  const groups = useMemo(
     () =>
-      buildSectionContactRows(
+      buildSectionContactGroups(
         batchCode,
         sectionIndex,
         semesterNumber,
@@ -219,5 +322,5 @@ export function SectionFacultyContactsFooter({
     [batchCode, sectionIndex, semesterNumber, assignments, facultyById],
   );
 
-  return <ClassFacultyContactsFooter rows={rows} />;
+  return <ClassFacultyContactsFooter groups={groups} />;
 }

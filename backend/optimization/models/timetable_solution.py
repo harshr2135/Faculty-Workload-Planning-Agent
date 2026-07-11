@@ -26,6 +26,7 @@ class TimetableEntry:
     room_name: str
     start_time: str
     end_time: str
+    lab_sub_batch: str | None = None
 
 
 @dataclass
