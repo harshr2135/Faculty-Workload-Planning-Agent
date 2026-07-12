@@ -49,6 +49,37 @@ export function updateAllocationRun(
   return apiPatch<AllocationRun>(`/allocations/${runId}`, body);
 }
 
+export type ReportMode =
+  | "template"
+  | "llm_summary"
+  | "llm_full_facts"
+  | "llm_full_raw";
+
+export interface BatchReportRequest {
+  batch_code: string;
+  semester_number: number;
+  report_mode?: ReportMode;
+  /** @deprecated Use report_mode: "llm_summary" instead */
+  use_ai_narrative?: boolean;
+}
+
+export interface BatchReportResponse {
+  run_id: number;
+  batch_code: string;
+  semester_number: number;
+  plan_name: string | null;
+  generated_at: string;
+  markdown: string;
+  narrative_source: string;
+}
+
+export function generateBatchReport(
+  runId: number,
+  body: BatchReportRequest,
+): Promise<BatchReportResponse> {
+  return apiPost<BatchReportResponse>(`/allocations/${runId}/reports/batch-summary`, body);
+}
+
 export function defaultMaxTimeSeconds(_batchCount: number): number {
   return 120;
 }

@@ -44,6 +44,15 @@ def is_pec_course_type(course_type: str) -> bool:
     return normalized == "PEC" or bool(PEC_GROUP_PATTERN.match(normalized))
 
 
+def pec_pool_number(course_type: str) -> int | None:
+    """Extract pool index from types like PEC 1 … PEC 5."""
+    normalized = normalize_course_type(course_type)
+    if normalized == "PEC":
+        return None
+    match = re.search(r"PEC\s+(\d+)", normalized)
+    return int(match.group(1)) if match else None
+
+
 def uses_lecture_hall(course_type: str) -> bool:
     normalized = normalize_course_type(course_type)
     return normalized in LECTURE_HALL_COURSE_TYPES or is_pec_course_type(normalized)

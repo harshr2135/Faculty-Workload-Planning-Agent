@@ -1,4 +1,5 @@
-# LLM provider routing — API keys supplied via environment variables
+# LLM provider routing — API keys supplied via environment variables (see .env)
+# NEVER put actual API keys in this file.
 
 default_provider: nim
 

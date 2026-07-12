@@ -25,6 +25,13 @@ class Settings(BaseSettings):
 
     fwp_cors_origins: str = "http://localhost:5173,http://localhost:3000"
 
+    fwp_ai_enabled: bool = False
+    fwp_ai_provider: str = "nim"
+    fwp_nim_api_key: str | None = None
+    fwp_nim_base_url: str = "https://integrate.api.nvidia.com/v1"
+    fwp_openai_api_key: str | None = None
+    fwp_groq_api_key: str | None = None
+
     @property
     def cors_origins_list(self) -> list[str]:
         return [origin.strip() for origin in self.fwp_cors_origins.split(",") if origin.strip()]

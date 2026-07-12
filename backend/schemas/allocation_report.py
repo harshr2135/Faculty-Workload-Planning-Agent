@@ -1,0 +1,101 @@
+"""Schemas for batch allocation summary reports."""
+
+from __future__ import annotations
+
+from enum import Enum
+
+from pydantic import BaseModel, Field, model_validator
+
+
+class ReportMode(str, Enum):
+    """How the batch summary report is produced."""
+
+    TEMPLATE = "template"
+    LLM_SUMMARY = "llm_summary"
+    LLM_FULL_FACTS = "llm_full_facts"
+    LLM_FULL_RAW = "llm_full_raw"
+
+
+class BatchReportRequest(BaseModel):
+    batch_code: str = Field(examples=["2023-27"])
+    semester_number: int = Field(ge=1, le=12, examples=[5])
+    report_mode: ReportMode = Field(
+        default=ReportMode.TEMPLATE,
+        description=(
+            "template: Python-built report; llm_summary: AI executive summary only; "
+            "llm_full_facts: AI writes full report from aggregated facts JSON; "
+            "llm_full_raw: AI writes full report from raw assignments/timetable JSON."
+        ),
+    )
+    use_ai_narrative: bool = Field(
+        default=False,
+        description="Deprecated. When true and report_mode is template, uses llm_summary.",
+    )
+
+    @model_validator(mode="after")
+    def _resolve_legacy_ai_flag(self) -> BatchReportRequest:
+        if self.use_ai_narrative and self.report_mode == ReportMode.TEMPLATE:
+            self.report_mode = ReportMode.LLM_SUMMARY
+        return self
+
+
+class PecReportRow(BaseModel):
+    course_code: str
+    course_name: str
+    course_type: str
+    pec_pool_number: int | None = None
+    student_count: int
+    scheduled: bool
+    room_type: str | None = None
+
+
+class FacultyReportRow(BaseModel):
+    faculty_id: int
+    full_name: str
+    designation_key: str | None
+    theory_hours: int
+    lab_hours: int
+    total_hours: int
+    theory_courses: int
+    lab_sessions: int
+
+
+class BatchReportFacts(BaseModel):
+    run_id: int
+    plan_name: str | None
+    is_saved: bool
+    batch_code: str
+    semester_number: int
+    section_count: int
+    working_days: list[str]
+    workload_status: str
+    timetable_status: str | None
+    assignment_count: int
+    timetable_entry_count: int
+    unique_courses: int
+    theory_sessions: int
+    lab_sessions: int
+    faculty_assigned: int
+    workload_hours_min: int
+    workload_hours_max: int
+    workload_hours_avg: float
+    classrooms_used: list[str]
+    laboratories_used: list[str]
+    lecture_halls_used: list[str]
+    pec_rows: list[PecReportRow]
+    faculty_rows: list[FacultyReportRow]
+    violation_messages: list[str]
+    timetable_messages: list[str]
+
+
+class BatchReportResponse(BaseModel):
+    run_id: int
+    batch_code: str
+    semester_number: int
+    plan_name: str | None
+    generated_at: str
+    markdown: str
+    facts: BatchReportFacts
+    narrative_source: str = Field(
+        description="template | llm | llm_full_facts | llm_full_raw | llm_unavailable",
+    )

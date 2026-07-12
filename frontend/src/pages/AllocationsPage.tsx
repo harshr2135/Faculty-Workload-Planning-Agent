@@ -9,6 +9,7 @@ import {
 } from "@/api/allocations";
 import type { AllocationAssignment, AllocationRun, BatchSemesterPlanInput, Course } from "@/types/api";
 import { EditableAssignmentsTable } from "@/components/EditableAssignmentsTable";
+import { AllocationReportPanel } from "@/components/AllocationReportPanel";
 import {
   buildPecEnrollmentsPayload,
   isPecCourseType,
@@ -496,6 +497,7 @@ function AllocationResults({
           ))}
         </div>
       )}
+      <AllocationReportPanel result={result} />
       {(result.timetable_grid ||
         (result.section_timetable_grids?.length ?? 0) > 0 ||
         (result.faculty_timetable_grids?.length ?? 0) > 0 ||
