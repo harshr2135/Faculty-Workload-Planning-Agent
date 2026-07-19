@@ -53,9 +53,25 @@ class FacultyReportRow(BaseModel):
     faculty_id: int
     full_name: str
     designation_key: str | None
+    designation_label: str = "—"
     theory_hours: int
     lab_hours: int
     total_hours: int
+    theory_courses: int
+    lab_sessions: int
+
+
+class ConsolidatedFacultyRow(BaseModel):
+    """Faculty workload aggregated across every batch/semester in a run."""
+
+    faculty_id: int
+    full_name: str
+    designation_key: str | None
+    designation_label: str = "—"
+    theory_hours: int
+    lab_hours: int
+    total_hours: int
+    batch_codes: list[str]
     theory_courses: int
     lab_sessions: int
 
@@ -99,3 +115,25 @@ class BatchReportResponse(BaseModel):
     narrative_source: str = Field(
         description="template | llm | llm_full_facts | llm_full_raw | llm_unavailable",
     )
+
+
+class AllBatchesReportRequest(BaseModel):
+    report_mode: ReportMode = Field(
+        default=ReportMode.LLM_FULL_FACTS,
+        description="Report mode applied to every batch/semester in the run.",
+    )
+
+
+class BatchReportSection(BaseModel):
+    batch_code: str
+    semester_number: int
+    narrative_source: str
+
+
+class AllBatchesReportResponse(BaseModel):
+    run_id: int
+    plan_name: str | None
+    generated_at: str
+    batch_count: int
+    markdown: str
+    sections: list[BatchReportSection]

@@ -80,6 +80,32 @@ export function generateBatchReport(
   return apiPost<BatchReportResponse>(`/allocations/${runId}/reports/batch-summary`, body);
 }
 
+export interface AllBatchesReportRequest {
+  report_mode?: ReportMode;
+}
+
+export interface BatchReportSection {
+  batch_code: string;
+  semester_number: number;
+  narrative_source: string;
+}
+
+export interface AllBatchesReportResponse {
+  run_id: number;
+  plan_name: string | null;
+  generated_at: string;
+  batch_count: number;
+  markdown: string;
+  sections: BatchReportSection[];
+}
+
+export function generateAllBatchesReport(
+  runId: number,
+  body: AllBatchesReportRequest = {},
+): Promise<AllBatchesReportResponse> {
+  return apiPost<AllBatchesReportResponse>(`/allocations/${runId}/reports/all-batches`, body);
+}
+
 export function defaultMaxTimeSeconds(_batchCount: number): number {
   return 120;
 }

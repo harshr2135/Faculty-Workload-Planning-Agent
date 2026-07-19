@@ -92,5 +92,15 @@ class SolverConfig:
     hours_scale: int = 1
     mismatch_penalty: int = 50
     fallback_penalty: int = 200
+    # Peak-load balancing weight, used as a fallback when fewer than two faculty have a
+    # real (non-sentinel) weekly-hour cap and proportional balancing cannot apply.
     balance_penalty: int = 10
+    # Proportional (utilization) balancing: spread load so each faculty member's hours track
+    # the ratio of their designation cap (e.g. an Assistant Prof carries proportionally more
+    # than a Professor). Acts as a tie-breaker beneath specialization/lab/section quality.
+    proportional_balance_penalty: int = 1
+    # Soft AICTE workload policy penalties (per lab session over the cap / per duplicated
+    # section). Weekly-hour maximums are enforced as a HARD constraint, not penalized.
+    over_max_labs_penalty: int = 60
+    duplicate_section_penalty: int = 25
     stop_after_first_solution: bool = False

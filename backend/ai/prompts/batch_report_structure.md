@@ -48,7 +48,12 @@ If no PEC data: _No PEC electives recorded for this batch/semester._
 
 | Faculty | Designation | Theory h | Lab h | Total h | Theory courses | Lab sessions |
 
-One row per faculty with teaching assignments in this batch.
+One row per faculty with teaching assignments in this batch. The **Designation** column is
+REQUIRED and must never be omitted — fill it from each faculty row's `designation_label` field
+(use "—" if that value is missing). Map the columns from each faculty row as:
+Faculty = `full_name`, Designation = `designation_label`, Theory h = `theory_hours`,
+Lab h = `lab_hours`, Total h = `total_hours`, Theory courses = `theory_courses`,
+Lab sessions = `lab_sessions`.
 
 ## Laboratory & room utilization
 

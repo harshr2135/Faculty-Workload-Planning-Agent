@@ -107,12 +107,22 @@ class FacultyWorkloadSummaryRead(BaseModel):
     faculty_id: int
     full_name: str
     designation_key: str | None
+    designation_label: str = "—"
     theory_weekly_hours: int
     lab_weekly_hours: int
     total_weekly_hours: int
     theory_course_count: int
     lab_course_count: int
     lab_session_count: int
+
+    @model_validator(mode="after")
+    def _derive_designation_label(self) -> "FacultyWorkloadSummaryRead":
+        # Label is fully derived from the policy key, so every construction path
+        # (fresh run, saved-run reload, post-edit recompute) stays consistent.
+        from backend.core.domain.policy_config import designation_label_for
+
+        self.designation_label = designation_label_for(self.designation_key)
+        return self
 
 
 class TimetableEntryRead(BaseModel):

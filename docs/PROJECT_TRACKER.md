@@ -1,7 +1,7 @@
 # Faculty Workload Planning Agent — Project Tracker
 
 > Living document for tracking completed and pending work.  
-> **Last updated:** 2026-07-12 (batch department reports, optional AI narrative)
+> **Last updated:** 2026-07-19 (CP-SAT default engine, hard hour caps, cap-proportional balancing, LLM full-facts reports, designation labels)
 
 ---
 
@@ -30,7 +30,7 @@ Optimization run                                  ✅ done (multi-batch)
 | **A — Master data first** (recommended) | Define DB + import for courses, rooms, labs, semesters; then build UI pages for each |
 | **B — Faculty UI first** | Fast demo of imported AIML faculty only; other data still needed before allocation |
 
-**Recommendation:** Focus next on **AI explanation layer**, **batch-wise export**, and **hard AICTE minimums** — core allocation + timetable path is working.
+**Recommendation:** Core allocation + timetable + CP-SAT (hard hour caps, cap-proportional balancing) + LLM reports are working. Focus next on **faculty subject preferences** (soft objective), **batch-wise export**, and **hard AICTE minimums**.
 
 ---
 
@@ -48,18 +48,18 @@ Optimization run                                  ✅ done (multi-batch)
 | **Laboratories (available)** | ✅ Done | 508, 509, 510 |
 | **Semesters / academic year rules** | ✅ Done | Year levels, sections, working days configured |
 | Timetable / time slots | ✅ Done | 7 teaching periods + break + lunch (08:30–16:20) |
-| Policies (AICTE rules) | ✅ Done | Designation hours, min courses, lab limits, similarity matching, dual-faculty labs |
+| Policies (AICTE rules) | ✅ Done | Designation hours (**hard max**), min courses, lab limits (**soft max**), similarity matching, dual-faculty labs |
 | Frontend | ✅ Admin UI | Dashboard, faculty, courses, rooms, timetable, policies, **allocations + timetable grids** |
-| Optimization engine | ✅ Slice 1–2+ | Workload CP-SAT/greedy + weekly timetable (greedy default; CP-SAT available) |
+| Optimization engine | ✅ Slice 1–3 | **Workload CP-SAT default** + weekly timetable; hard weekly-hour caps, cap-proportional (utilization) load balancing; greedy retained as fallback |
 | **Lab scheduling (B1/B2)** | ✅ Done | Mandatory B1 + B2 sub-batches; 2 h/week each; capacity 35; 2 faculty per lab |
 | **PEC enrollment & room rules** | ✅ Done | Per-course student counts; >150 → LH, ≤150 → classroom; SEC always LH; parallel pool timing **disabled** |
 | **Roomless courses** | ✅ Done | UG Research Project — no classroom/lab reserved |
 | **Allocation UX** | ✅ Done | Multi-batch runs, save/load plans, editable assignments, section/faculty/room/lab grid views |
-| AI explanation layer | 🟡 Partial | Batch report generator + optional NIM narrative; interactive agent not started |
+| AI explanation layer | 🟡 Partial | Batch + all-batches LLM full-facts reports; interactive agent not started |
 | Auth / RBAC | ❌ Not started | JWT, dept head, admin roles |
-| Reports & analytics | 🟡 Partial | Batch markdown report; full PDF/Excel export pending |
+| Reports & analytics | 🟡 Partial | Per-batch + combined LLM report, consolidated faculty workload table, designation column; full PDF/Excel export pending |
 
-**Phase:** Phase 6 started (batch reports) → **interactive AI advisor / batch Excel export** next
+**Phase:** Phase 5 Slice 3 (CP-SAT hard caps + cap-proportional balancing) & Phase 6 reports done → **faculty preferences (soft objective) / batch Excel export / interactive AI advisor** next
 
 ---
 
@@ -177,6 +177,19 @@ Optimization run                                  ✅ done (multi-batch)
 - [x] Frontend `AllocationReportPanel` — generate, preview, download `.md`, print/PDF
 - [x] Unit tests: `test_allocation_report_service.py`
 
+### Phase 5/6 — CP-SAT default engine + policy & reporting refinements (✅)
+- [x] **CP-SAT is now the active workload engine** (`allocation_service` → `WorkloadCpsatSolver`); greedy kept as fallback
+- [x] **Hard AICTE weekly-hour caps** — load may never exceed the designation max (infeasible if capacity is short)
+- [x] **Soft lab-session maximums** — preferred but exceedable; overages reported as violations
+- [x] **Cap-proportional (utilization) load balancing** — hours distributed in proportion to designation caps via L1 utilization spread; sentinel/zero-cap guards; peak-load fallback when <2 real caps
+- [x] **Lexicographic objective** — specialization/policy quality strictly dominates balancing (never trades teaching fit for evenness)
+- [x] CP-SAT `_extract_assignments` now preserves `lab_sub_batch` (B1/B2) and `requires_lecture_hall`
+- [x] **All-batches combined report** — `POST /api/v1/allocations/{run_id}/reports/all-batches`; per-batch sections generated concurrently
+- [x] **Consolidated faculty workload table** — run-wide load distribution across all batches
+- [x] **LLM full-facts report mode** — model renders full report from pre-aggregated facts JSON; HTML/Markdown views + print
+- [x] **Designation label** — shared `designation_label_for()` (single source); shown in reports **and** the after-allocation faculty workload table (auto-derived via schema validator)
+- [x] Unit tests updated for hard caps, cap-proportional split, specialization dominance (**68 tests**)
+
 ---
 
 ## Pending Tasks
@@ -192,20 +205,24 @@ Optimization run                                  ✅ done (multi-batch)
 - [ ] Link lab courses to specific lab rooms (optimizer preference, not hard constraint)
 - [ ] Standalone timetable assignment CRUD or import (outside allocation run)
 
-### Phase 5 — Optimization engine (Slice 3 — pending)
-- [ ] Hard AICTE minimum hours/courses per faculty (currently warnings only)
-- [ ] Faculty preference / leave constraints
+### Phase 5 — Optimization engine (Slice 3)
+- [x] **Hard AICTE weekly-hour maximums** per faculty (blocking; infeasible if short on capacity)
+- [x] **Workload balance objective** — cap-proportional utilization balancing (soft CP-SAT objective)
+- [ ] Hard AICTE **minimum** hours/courses per faculty (currently warnings only)
+- [ ] **Faculty subject preferences** — capture ranked preference data, then add a soft `preference_penalty` objective + preference-satisfaction fairness spread (refines choice among eligible specialists; leave constraints)
+- [ ] **Tiered eligibility** (optional) — specialists → same-designation → fallback, so the balancer has room to honor cap ratios when specialists are scarce
 - [ ] Explainability payload for LLM layer (structured JSON from validator + assignments)
-- [ ] Objectives: fairness, preference satisfaction, workload balance (soft CP-SAT objectives)
 - [ ] Re-enable PEC parallel pool timing as optional policy flag
 - [ ] Larger benchmark / performance tests for full department
 
 ### Phase 6 — AI explanation layer
 - [x] **Batch summary report** — deterministic markdown (`POST /allocations/{id}/reports/batch-summary`)
-- [x] Report facts aggregator (workload, PEC, labs, rooms, violations)
+- [x] **All-batches combined report** (`POST /allocations/{id}/reports/all-batches`) + consolidated faculty workload table
+- [x] Report facts aggregator (workload, PEC, labs, rooms, violations, designation labels)
 - [x] Minimal LLM client (`backend/ai/llm/client.py`) — NIM / OpenAI / Groq
 - [x] Optional AI executive summary when `FWP_AI_ENABLED=true`
-- [x] Frontend report panel (generate, download Markdown, print/PDF)
+- [x] **LLM full-facts report mode** — model renders the full report from grounded facts JSON
+- [x] Frontend report panel (generate, formatted/Markdown views, download Markdown, print/PDF)
 - [ ] Full agent with tools (interactive Q&A over allocation runs)
 - [ ] Prompt guardrails wired into all AI flows
 - [ ] API: explain allocation / summarize conflicts (chat)
@@ -238,9 +255,10 @@ Optimization run                                  ✅ done (multi-batch)
 |----------|------|-----|
 | ✅ Done | Subjects/courses per semester | Defines **what** must be allocated |
 | ✅ Done | Classrooms + laboratories | Defines **where** theory/labs run |
-| ✅ Done | CP-SAT / greedy allocation + timetable | Proves decision-support, not chatbot |
+| ✅ Done | CP-SAT allocation (hard caps, cap-proportional balance) + timetable | Proves decision-support, not chatbot |
 | ✅ Done | Admin UI + allocation/timetable views | Usable for dept admin demo |
-| 🟡 Medium | **AI explanations (NIM)** | NVIDIA / LLM story; explain-only |
+| ✅ Done | **LLM reports (per-batch + all-batches)** | NVIDIA / LLM story; explain-only |
+| 🟡 Medium | **Faculty subject preferences (soft objective)** | Fairer choice among eligible specialists |
 | 🟡 Medium | **Batch-wise Excel/CSV export** | Stakeholder deliverable |
 | 🟡 Medium | Hard AICTE minimum constraints | Real-world policy enforcement |
 | 🟢 Lower | Auth, notifications, full analytics | Production polish |
@@ -255,10 +273,12 @@ Optimization run                                  ✅ done (multi-batch)
 4. ~~Timetable / time slots + weekly grid allocation~~ ✅  
 5. ~~Policies — AICTE, labs, PEC/SEC rules~~ ✅  
 6. ~~Minimal optimizer + multi-batch timetable UI~~ ✅  
-7. **Alembic migrations** — production DB hygiene  
-8. **Batch-wise export** — CSV/Excel per batch  
-9. **AI explanation layer** — NIM explain-only panel  
-10. **Hard AICTE mins + auth** — production readiness  
+7. ~~CP-SAT default + hard hour caps + cap-proportional balancing~~ ✅  
+8. ~~AI explanation layer — per-batch + all-batches LLM reports~~ ✅  
+9. **Faculty subject preferences** — soft objective + satisfaction fairness  
+10. **Alembic migrations** — production DB hygiene  
+11. **Batch-wise export** — CSV/Excel per batch  
+12. **Hard AICTE mins + auth** — production readiness  
 
 ---
 
@@ -277,7 +297,7 @@ Optimization run                                  ✅ done (multi-batch)
 | Timetable weekly grid | Allocation run | ✅ Generated | Stored in `allocation_runs.solution` |
 | PEC enrollment counts | UI / API | ✅ Supported | Per-course counts per batch in allocation request |
 | AICTE / dept policies | Config | ✅ Seeded | Labs, PEC room rules, similarity matching, roomless courses |
-| Faculty preferences | Form / Excel | ❌ Later | Subject preferences, leave |
+| Faculty preferences | Form / Excel | ❌ Later | Ranked subject preferences + leave; planned as soft CP-SAT objective (`preference_penalty`) with satisfaction fairness — refines choice among eligible specialists |
 | AI / LLM | Config only | ❌ Not wired | NIM, OpenAI, Groq in `configs/ai_providers.yaml` |
 
 ---

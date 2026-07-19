@@ -532,6 +532,7 @@ function AllocationResults({
         <DataTable>
           <DataTableHead>
             <DataTableHeaderCell>Faculty</DataTableHeaderCell>
+            <DataTableHeaderCell>Designation</DataTableHeaderCell>
             <DataTableHeaderCell>Theory hrs</DataTableHeaderCell>
             <DataTableHeaderCell>Lab hrs</DataTableHeaderCell>
             <DataTableHeaderCell>Total</DataTableHeaderCell>
@@ -544,6 +545,7 @@ function AllocationResults({
               .map((f) => (
                 <tr key={f.faculty_id} className="hover:bg-slate-50">
                   <DataTableCell className="font-medium">{f.full_name}</DataTableCell>
+                  <DataTableCell>{f.designation_label}</DataTableCell>
                   <DataTableCell>{f.theory_weekly_hours}</DataTableCell>
                   <DataTableCell>{f.lab_weekly_hours}</DataTableCell>
                   <DataTableCell>{f.total_weekly_hours}</DataTableCell>

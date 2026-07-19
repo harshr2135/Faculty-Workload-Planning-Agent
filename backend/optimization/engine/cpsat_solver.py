@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import math
+
 from ortools.sat.python import cp_model
 
+from backend.core.domain.policy_config import UNLIMITED_MAX_WEEKLY_HOURS
 from backend.optimization.engine.solver_tuning import apply_cpsat_performance
 from backend.optimization.models.problem_definition import AssignmentSlot, SlotKind, SolverConfig, WorkloadProblem
 from backend.optimization.models.solution import (
@@ -108,30 +111,76 @@ class WorkloadCpsatSolver:
             if terms:
                 faculty_loads[faculty.id] = sum(terms)
 
-        # Objective: prefer specialization matches, then balance load.
-        objective_terms: list[cp_model.LinearExpr] = []
+        # Hard AICTE maximum weekly hours: a faculty member's total load may never exceed
+        # the designation cap. May render the problem infeasible if capacity is insufficient.
+        for faculty in problem.faculty:
+            load = faculty_loads.get(faculty.id)
+            if load is None or faculty.max_weekly_hours >= UNLIMITED_MAX_WEEKLY_HOURS:
+                continue
+            model.Add(load <= int(faculty.max_weekly_hours))
+
+        # ---- Quality objective (dominant): teaching fit + policy softness ----
+        # Prefer specialization matches; penalize lab-session overages and one faculty
+        # taking multiple sections of the same course.
+        quality_terms: list[cp_model.LinearExpr] = []
         for slot in theory_slots:
             for faculty in problem.faculty:
                 key = (faculty.id, slot.slot_id)
                 if key not in theory_vars:
                     continue
                 cost = _assignment_cost(slot, faculty.id, config)
-                objective_terms.append(theory_vars[key] * cost)
+                quality_terms.append(theory_vars[key] * cost)
         for slot in lab_slots:
             for faculty in problem.faculty:
                 key = (faculty.id, slot.slot_id)
                 if key not in lab_vars:
                     continue
                 cost = _assignment_cost(slot, faculty.id, config)
-                objective_terms.append(lab_vars[key] * cost)
+                quality_terms.append(lab_vars[key] * cost)
 
-        if faculty_loads:
-            max_load = model.NewIntVar(0, 10_000, "max_faculty_load")
-            for load in faculty_loads.values():
-                model.Add(max_load >= load)
-            objective_terms.append(max_load * config.balance_penalty)
+        for faculty in problem.faculty:
+            if faculty.max_lab_sessions is None:
+                continue
+            lab_terms = [
+                lab_vars[(faculty.id, slot.slot_id)]
+                for slot in lab_slots
+                if (faculty.id, slot.slot_id) in lab_vars
+            ]
+            if not lab_terms:
+                continue
+            over_labs = model.NewIntVar(0, len(lab_terms), f"over_labs_{faculty.id}")
+            model.Add(over_labs >= sum(lab_terms) - faculty.max_lab_sessions)
+            quality_terms.append(over_labs * config.over_max_labs_penalty)
 
-        model.Minimize(sum(objective_terms))
+        theory_by_course: dict[int, list[AssignmentSlot]] = {}
+        for slot in theory_slots:
+            theory_by_course.setdefault(slot.course_id, []).append(slot)
+        for course_id, course_slots in theory_by_course.items():
+            if len(course_slots) < 2:
+                continue
+            for faculty in problem.faculty:
+                section_terms = [
+                    theory_vars[(faculty.id, slot.slot_id)]
+                    for slot in course_slots
+                    if (faculty.id, slot.slot_id) in theory_vars
+                ]
+                if len(section_terms) < 2:
+                    continue
+                duplicate_sections = model.NewIntVar(
+                    0, len(section_terms), f"dup_{course_id}_{faculty.id}"
+                )
+                model.Add(duplicate_sections >= sum(section_terms) - 1)
+                quality_terms.append(duplicate_sections * config.duplicate_section_penalty)
+
+        # ---- Balance objective (tie-breaker): keep load proportional to designation caps ----
+        balance_terms, balance_upper_bound = self._build_balance_terms(
+            model, problem, faculty_loads, config
+        )
+
+        # Lexicographic weighting: any 1-unit gain in quality outweighs the entire balance
+        # term, so specialization/policy fit is never sacrificed to smooth the distribution.
+        quality_weight = balance_upper_bound + 1
+        model.Minimize(quality_weight * sum(quality_terms) + sum(balance_terms))
 
         solver = cp_model.CpSolver()
         apply_cpsat_performance(
@@ -146,8 +195,9 @@ class WorkloadCpsatSolver:
                 status=_map_status(status),
                 objective_value=None,
                 messages=[
-                    "Solver could not find a feasible assignment. "
-                    "Try relaxing constraints, adding faculty, or reviewing course load."
+                    "Solver could not find a feasible assignment. This can happen when the "
+                    "AICTE weekly-hour caps leave too little capacity to cover every course. "
+                    "Try adding eligible faculty, raising the hour caps, or reducing course load."
                 ],
             )
 
@@ -169,6 +219,72 @@ class WorkloadCpsatSolver:
         )
         solution.violations = validate_solution(problem, solution)
         return solution
+
+    @staticmethod
+    def _build_balance_terms(
+        model: cp_model.CpModel,
+        problem: WorkloadProblem,
+        faculty_loads: dict[int, cp_model.LinearExpr],
+        config: SolverConfig,
+    ) -> tuple[list[cp_model.LinearExpr], int]:
+        """Build load-balancing objective terms.
+
+        Preferred mode (>=2 faculty with a real cap): proportional balancing. Each faculty's
+        hours are scaled into a common utilization space (``load * scale / cap``) so that equal
+        scaled loads mean equal utilization — i.e. hours distributed in proportion to caps. The
+        L1 spread of these scaled loads around a free target is minimized.
+
+        Fallback (fewer than two real caps): plain peak-load minimization.
+
+        Returns the objective terms plus a provable upper bound on their total, used to weight
+        the dominant quality objective above them.
+        """
+        capped = [
+            faculty
+            for faculty in problem.faculty
+            if faculty.id in faculty_loads
+            and 0.0 < faculty.max_weekly_hours < UNLIMITED_MAX_WEEKLY_HOURS
+        ]
+
+        if len(capped) < 2:
+            if not faculty_loads:
+                return [], 0
+            max_load = model.NewIntVar(0, 10_000, "max_faculty_load")
+            for load in faculty_loads.values():
+                model.Add(max_load >= load)
+            return [max_load * config.balance_penalty], 10_000 * config.balance_penalty
+
+        caps = {faculty.id: int(round(faculty.max_weekly_hours)) for faculty in capped}
+        scale = _utilization_scale(list(caps.values()))
+        penalty = config.proportional_balance_penalty
+
+        target = model.NewIntVar(0, scale, "utilization_target")
+        balance_terms: list[cp_model.LinearExpr] = []
+        for faculty in capped:
+            weight = scale // caps[faculty.id]
+            scaled_load = faculty_loads[faculty.id] * weight
+            deviation = model.NewIntVar(0, scale, f"util_dev_{faculty.id}")
+            model.Add(deviation >= scaled_load - target)
+            model.Add(deviation >= target - scaled_load)
+            balance_terms.append(deviation * penalty)
+
+        return balance_terms, len(capped) * scale * penalty
+
+
+# Ceiling for the utilization scaling factor. The exact least-common-multiple of the caps
+# is used when small (department caps are a handful of small integers); if a pathological
+# set of caps produces a very large LCM, we clamp to keep objective coefficients bounded,
+# accepting a tiny proportional rounding error.
+_UTILIZATION_SCALE_CEILING = 50_000
+
+
+def _utilization_scale(caps: list[int]) -> int:
+    """Common scaling factor so ``load * scale / cap`` is an integer utilization measure."""
+    distinct = sorted({cap for cap in caps if cap > 0})
+    if not distinct:
+        return 1
+    scale = math.lcm(*distinct)
+    return min(scale, _UTILIZATION_SCALE_CEILING)
 
 
 def _assignment_cost(slot: AssignmentSlot, faculty_id: int, config: SolverConfig) -> int:
@@ -223,6 +339,8 @@ def _extract_assignments(
                 weekly_hours=slot.weekly_hours,
                 faculty_ids=assigned_ids,
                 faculty_names=[faculty_by_id[fid].full_name for fid in assigned_ids],
+                requires_lecture_hall=slot.requires_lecture_hall,
+                lab_sub_batch=slot.lab_sub_batch,
             )
         )
 
@@ -247,6 +365,8 @@ def _extract_assignments(
                 weekly_hours=slot.weekly_hours,
                 faculty_ids=assigned_ids,
                 faculty_names=[faculty_by_id[fid].full_name for fid in assigned_ids],
+                requires_lecture_hall=slot.requires_lecture_hall,
+                lab_sub_batch=slot.lab_sub_batch,
             )
         )
 

@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
-from backend.optimization.models.problem_definition import AssignmentSlot, SlotKind, WorkloadProblem
+from backend.optimization.models.problem_definition import (
+    AssignmentSlot,
+    FacultyInput,
+    SlotKind,
+    WorkloadProblem,
+)
 from backend.optimization.models.solution import (
     FacultyWorkloadSummary,
     OptimizationSolution,
@@ -121,7 +126,7 @@ class GreedyWorkloadAllocator:
     def _pick_theory_faculty(
         self,
         slot: AssignmentSlot,
-        faculty_by_id: dict[int, object],
+        faculty_by_id: dict[int, FacultyInput],
         loads: dict[int, int],
         theory_faculty_by_course_batch: dict[tuple[str, int], set[int]],
     ) -> list[int]:
@@ -143,7 +148,7 @@ class GreedyWorkloadAllocator:
     def _pick_lab_faculty(
         self,
         slot: AssignmentSlot,
-        faculty_by_id: dict[int, object],
+        faculty_by_id: dict[int, FacultyInput],
         loads: dict[int, int],
         lab_sessions: dict[int, int],
         required_count: int,
@@ -170,21 +175,46 @@ class GreedyWorkloadAllocator:
         preferred: list[int],
         eligible: tuple[int, ...],
         hours: int,
-        faculty_by_id: dict[int, object],
+        faculty_by_id: dict[int, FacultyInput],
         loads: dict[int, int],
         lab_sessions: dict[int, int] | None = None,
     ) -> int | None:
         candidates = [fid for fid in preferred if fid in eligible]
         if not candidates:
             candidates = list(eligible)
-
-        feasible: list[int] = []
-        for faculty_id in candidates:
-            feasible.append(faculty_id)
-
-        if not feasible:
+        if not candidates:
             return None
-        return min(feasible, key=lambda fid: (loads[fid], fid))
+
+        # Hard cap: weekly work hours may never exceed the designation maximum. A candidate
+        # who would breach the cap is removed entirely; if none remain the slot is left
+        # unassigned (surfaced as a workload_capacity_exceeded infeasibility upstream).
+        hours_legal = [
+            faculty_id
+            for faculty_id in candidates
+            if loads[faculty_id] + hours <= faculty_by_id[faculty_id].max_weekly_hours
+        ]
+        if not hours_legal:
+            return None
+
+        # Soft cap: prefer faculty who stay within their lab-session maximum, but never block
+        # an assignment on account of it; any overage is flagged as a policy violation.
+        within_lab_cap = [
+            faculty_id
+            for faculty_id in hours_legal
+            if self._within_lab_cap(faculty_by_id[faculty_id], lab_sessions, faculty_id)
+        ]
+        pool = within_lab_cap if within_lab_cap else hours_legal
+        return min(pool, key=lambda fid: (loads[fid], fid))
+
+    @staticmethod
+    def _within_lab_cap(
+        member: FacultyInput,
+        lab_sessions: dict[int, int] | None,
+        faculty_id: int,
+    ) -> bool:
+        if lab_sessions is None or member.max_lab_sessions is None:
+            return True
+        return lab_sessions[faculty_id] + 1 <= member.max_lab_sessions
 
 
 def _build_summaries(

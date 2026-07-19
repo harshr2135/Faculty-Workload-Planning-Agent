@@ -11,6 +11,29 @@ import {
 } from "@/components/ui/DataTable";
 import { useFetch } from "@/hooks/useFetch";
 
+const UNLIMITED_WEEKLY_HOURS = 999;
+
+function formatWeeklyHourCap(value: number): string {
+  if (value >= UNLIMITED_WEEKLY_HOURS) {
+    return "No limit";
+  }
+  return `${value} hrs`;
+}
+
+function formatLabSessionCap(value: number | null): string {
+  if (value === null) {
+    return "No limit";
+  }
+  return `${value} sessions`;
+}
+
+function formatMinimum(value: number | null): string {
+  if (!value) {
+    return "—";
+  }
+  return String(value);
+}
+
 export default function PoliciesPage() {
   const { data, loading, error, reload } = useFetch(fetchPolicies);
 
@@ -31,6 +54,8 @@ export default function PoliciesPage() {
             <DataTable>
               <DataTableHead>
                 <DataTableHeaderCell>Designation</DataTableHeaderCell>
+                <DataTableHeaderCell>Min theory courses</DataTableHeaderCell>
+                <DataTableHeaderCell>Min lab sessions</DataTableHeaderCell>
                 <DataTableHeaderCell>Weekly hour cap</DataTableHeaderCell>
                 <DataTableHeaderCell>Lab session cap</DataTableHeaderCell>
               </DataTableHead>
@@ -40,12 +65,19 @@ export default function PoliciesPage() {
                     <DataTableCell className="font-medium text-slate-900">
                       {policy.designation_label}
                     </DataTableCell>
-                    <DataTableCell>No limit</DataTableCell>
-                    <DataTableCell>No limit</DataTableCell>
+                    <DataTableCell>{formatMinimum(policy.min_theory_courses)}</DataTableCell>
+                    <DataTableCell>{formatMinimum(policy.min_lab_sessions)}</DataTableCell>
+                    <DataTableCell>{formatWeeklyHourCap(policy.max_weekly_hours)}</DataTableCell>
+                    <DataTableCell>{formatLabSessionCap(policy.max_lab_sessions)}</DataTableCell>
                   </tr>
                 ))}
               </DataTableBody>
             </DataTable>
+            <p className="mt-2 text-xs text-slate-500">
+              Minimums and maximums are AICTE targets applied as soft policies: allocation
+              prefers to keep faculty within these limits but is never blocked by them. Faculty
+              outside their limits are flagged as policy warnings in the allocation report.
+            </p>
           </section>
 
           <section>

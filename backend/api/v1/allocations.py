@@ -11,8 +11,13 @@ from backend.schemas.allocation import (
     AllocationRunUpdateRequest,
     BatchSemesterPlan,
 )
-from backend.schemas.allocation_report import BatchReportRequest, BatchReportResponse
-from backend.ai.services.report_service import build_batch_report
+from backend.schemas.allocation_report import (
+    AllBatchesReportRequest,
+    AllBatchesReportResponse,
+    BatchReportRequest,
+    BatchReportResponse,
+)
+from backend.ai.services.report_service import build_all_batches_report, build_batch_report
 from backend.services.allocation_service import AllocationService
 
 router = APIRouter(tags=["allocations"])
@@ -109,5 +114,22 @@ async def generate_batch_summary_report(
             semester_number=body.semester_number,
             report_mode=body.report_mode,
         )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
+@router.post("/allocations/{run_id}/reports/all-batches", response_model=AllBatchesReportResponse)
+async def generate_all_batches_report(
+    run_id: int,
+    body: AllBatchesReportRequest,
+    session: AsyncSession = Depends(get_db_session),
+) -> AllBatchesReportResponse:
+    """Generate one combined markdown report covering every batch/semester in a run."""
+    service = AllocationService()
+    run = await service.get_run(session, run_id)
+    if run is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Allocation run not found.")
+    try:
+        return await build_all_batches_report(run, report_mode=body.report_mode)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc

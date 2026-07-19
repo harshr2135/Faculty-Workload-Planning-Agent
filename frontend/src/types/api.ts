@@ -135,6 +135,7 @@ export interface FacultyWorkloadSummary {
   faculty_id: number;
   full_name: string;
   designation_key: string | null;
+  designation_label: string;
   theory_weekly_hours: number;
   lab_weekly_hours: number;
   total_weekly_hours: number;

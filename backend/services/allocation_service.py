@@ -27,12 +27,13 @@ from backend.models import (
     StudentBatch,
     TimeSlot,
 )
-from backend.optimization.engine.greedy_workload_allocator import GreedyWorkloadAllocator
+from backend.optimization.engine.cpsat_solver import WorkloadCpsatSolver
 from backend.optimization.engine.timetable_cpsat_solver import TimetableCpsatSolver
 from backend.optimization.models.problem_definition import (
     BatchPlanInput,
     CourseInput,
     FacultyInput,
+    SolverConfig,
     WorkloadProblem,
 )
 from backend.optimization.models.solution import OptimizationSolution, SolverStatus
@@ -98,14 +99,15 @@ class AllocationService:
         max_time_seconds: float = 120.0,
         schedule_timetable: bool = True,
     ) -> AllocationRunRead:
-        """Greedy workload + CP-SAT timetable (first feasible solution)."""
+        """CP-SAT workload + CP-SAT timetable (first feasible solution)."""
         resolved_plans = await self._resolve_batch_plans(session, batch_plans)
         problem, primary_batch, primary_semester, pec_catalogs = await self._build_problem(
             session,
             batch_plans=resolved_plans,
         )
 
-        workload_solution = GreedyWorkloadAllocator().allocate(problem)
+        workload_config = SolverConfig(max_time_seconds=max_time_seconds)
+        workload_solution = WorkloadCpsatSolver().solve(problem, config=workload_config)
 
         timetable_solution: TimetableSolution | None = None
         if (
@@ -485,11 +487,11 @@ class AllocationService:
                     designation_key=designation_key,
                     designation_label=member.designation,
                     min_weekly_hours=policy.min_weekly_hours if policy else 0.0,
-                    max_weekly_hours=UNLIMITED_MAX_WEEKLY_HOURS,
+                    max_weekly_hours=policy.max_weekly_hours if policy else UNLIMITED_MAX_WEEKLY_HOURS,
                     min_theory_courses=policy.min_theory_courses if policy else 0,
                     min_lab_courses=policy.min_lab_courses if policy else 0,
                     min_lab_sessions=policy.min_lab_sessions if policy else None,
-                    max_lab_sessions=None,
+                    max_lab_sessions=policy.max_lab_sessions if policy else None,
                 )
             )
 

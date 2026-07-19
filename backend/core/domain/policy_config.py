@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-# Max workload caps disabled for current planning runs (greedy allocator).
+# Sentinel used when a designation has no weekly-hour cap (e.g. unmatched designations).
 UNLIMITED_MAX_WEEKLY_HOURS = 999.0
 
 
@@ -21,36 +21,44 @@ class DesignationPolicyDefinition:
     match_keywords: tuple[str, ...]
 
 
+# AICTE-based per-designation workload rules for the AIML department.
+#   - Weekly-hour maximums are HARD: no faculty member is ever assigned beyond the cap,
+#     even if that leaves a course uncovered (surfaced as an infeasible allocation).
+#   - Lab-session maximums are SOFT: the allocator prefers to stay within them but will
+#     exceed them when necessary; overages are reported as violations.
+#   - Minimums (theory courses, lab sessions) are SOFT targets reported as violations.
+#   - Weekly-hour maximums use the upper bound of the AICTE range.
+#   - Lab minima/maxima are measured in scheduled lab SESSIONS (B1/B2 counted separately).
 AIML_DESIGNATION_POLICIES: list[DesignationPolicyDefinition] = [
     DesignationPolicyDefinition(
         designation_key="assistant_professor",
         designation_label="Assistant Professor",
-        min_theory_courses=0,
+        min_theory_courses=2,
         min_lab_courses=0,
         min_weekly_hours=0.0,
-        max_weekly_hours=UNLIMITED_MAX_WEEKLY_HOURS,
-        min_lab_sessions=None,
-        max_lab_sessions=None,
+        max_weekly_hours=24.0,
+        min_lab_sessions=4,
+        max_lab_sessions=5,
         match_keywords=("assistant professor",),
     ),
     DesignationPolicyDefinition(
         designation_key="associate_professor",
         designation_label="Associate Professor",
-        min_theory_courses=0,
+        min_theory_courses=2,
         min_lab_courses=0,
         min_weekly_hours=0.0,
-        max_weekly_hours=UNLIMITED_MAX_WEEKLY_HOURS,
-        min_lab_sessions=None,
-        max_lab_sessions=None,
+        max_weekly_hours=22.0,
+        min_lab_sessions=2,
+        max_lab_sessions=3,
         match_keywords=("associate professor",),
     ),
     DesignationPolicyDefinition(
         designation_key="professor",
         designation_label="Professor",
-        min_theory_courses=0,
+        min_theory_courses=1,
         min_lab_courses=0,
         min_weekly_hours=0.0,
-        max_weekly_hours=UNLIMITED_MAX_WEEKLY_HOURS,
+        max_weekly_hours=10.0,
         min_lab_sessions=None,
         max_lab_sessions=None,
         match_keywords=("professor",),
@@ -58,10 +66,10 @@ AIML_DESIGNATION_POLICIES: list[DesignationPolicyDefinition] = [
     DesignationPolicyDefinition(
         designation_key="chairperson",
         designation_label="Professor and Chairperson",
-        min_theory_courses=0,
+        min_theory_courses=1,
         min_lab_courses=0,
         min_weekly_hours=0.0,
-        max_weekly_hours=UNLIMITED_MAX_WEEKLY_HOURS,
+        max_weekly_hours=10.0,
         min_lab_sessions=None,
         max_lab_sessions=None,
         match_keywords=("chairperson", "chairpe"),
@@ -168,6 +176,23 @@ PLANNING_POLICY_DEFINITIONS: list[tuple[str, str, str | None]] = [
         "SEC courses always use lecture halls; PEC room choice depends on enrollment.",
     ),
 ]
+
+
+_DESIGNATION_LABELS_BY_KEY: dict[str, str] = {
+    policy.designation_key: policy.designation_label for policy in AIML_DESIGNATION_POLICIES
+}
+
+
+def designation_label_for(designation_key: str | None) -> str:
+    """Human-readable designation label for a policy key (e.g. 'Assistant Professor').
+
+    Falls back to a prettified key for unknown values and "—" when no key is set.
+    """
+    if not designation_key:
+        return "—"
+    return _DESIGNATION_LABELS_BY_KEY.get(
+        designation_key, designation_key.replace("_", " ").title()
+    )
 
 
 def resolve_designation_key(designation: str) -> str | None:

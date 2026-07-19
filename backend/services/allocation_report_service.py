@@ -9,6 +9,7 @@ from statistics import mean
 
 from backend.core.domain.course_type_config import is_pec_course_type, pec_pool_number
 from backend.core.domain.pec_config import pec_requires_lecture_hall
+from backend.core.domain.policy_config import designation_label_for
 from backend.schemas.allocation import (
     AllocationRunRead,
     BatchSemesterPlanRead,
@@ -19,6 +20,7 @@ from backend.schemas.allocation import (
 from backend.schemas.allocation_report import (
     BatchReportFacts,
     BatchReportResponse,
+    ConsolidatedFacultyRow,
     FacultyReportRow,
     PecReportRow,
 )
@@ -107,6 +109,97 @@ def build_batch_raw_payload(
         "violations": violations,
         "timetable_messages": list(run.timetable_messages),
     }
+
+
+def build_consolidated_faculty_rows(run: AllocationRunRead) -> list[ConsolidatedFacultyRow]:
+    """Aggregate each faculty member's workload across every batch/semester in the run."""
+    summary_by_id = {row.faculty_id: row for row in run.faculty_summaries}
+    stats: dict[int, dict[str, object]] = defaultdict(
+        lambda: {
+            "theory_hours": 0,
+            "lab_hours": 0,
+            "theory_courses": set(),
+            "lab_sessions": set(),
+            "batches": set(),
+        }
+    )
+
+    for assignment in run.assignments:
+        session_key = (
+            assignment.batch_code,
+            assignment.course_code,
+            assignment.kind,
+            assignment.lab_sub_batch or "",
+        )
+        for faculty_id in assignment.faculty_ids:
+            bucket = stats[faculty_id]
+            if assignment.batch_code:
+                batches = bucket["batches"]
+                assert isinstance(batches, set)
+                batches.add(assignment.batch_code)
+            if assignment.kind == "lab":
+                bucket["lab_hours"] = int(bucket["lab_hours"]) + assignment.weekly_hours
+                lab_sessions = bucket["lab_sessions"]
+                assert isinstance(lab_sessions, set)
+                lab_sessions.add(session_key)
+            else:
+                bucket["theory_hours"] = int(bucket["theory_hours"]) + assignment.weekly_hours
+                theory_courses = bucket["theory_courses"]
+                assert isinstance(theory_courses, set)
+                theory_courses.add((assignment.batch_code, assignment.course_code))
+
+    rows: list[ConsolidatedFacultyRow] = []
+    for faculty_id, bucket in stats.items():
+        summary = summary_by_id.get(faculty_id)
+        theory_hours = int(bucket["theory_hours"])
+        lab_hours = int(bucket["lab_hours"])
+        theory_courses = bucket["theory_courses"]
+        lab_sessions = bucket["lab_sessions"]
+        batches = bucket["batches"]
+        assert isinstance(theory_courses, set)
+        assert isinstance(lab_sessions, set)
+        assert isinstance(batches, set)
+        rows.append(
+            ConsolidatedFacultyRow(
+                faculty_id=faculty_id,
+                full_name=summary.full_name if summary else f"Faculty #{faculty_id}",
+                designation_key=summary.designation_key if summary else None,
+                designation_label=designation_label_for(summary.designation_key if summary else None),
+                theory_hours=theory_hours,
+                lab_hours=lab_hours,
+                total_hours=theory_hours + lab_hours,
+                batch_codes=sorted(batches),
+                theory_courses=len(theory_courses),
+                lab_sessions=len(lab_sessions),
+            )
+        )
+
+    return sorted(rows, key=lambda row: (-row.total_hours, row.full_name))
+
+
+def render_consolidated_faculty_markdown(rows: list[ConsolidatedFacultyRow]) -> str:
+    """Render the run-wide faculty workload distribution as a markdown section."""
+    lines = ["## Consolidated faculty workload (all batches)", ""]
+    if not rows:
+        lines.append("_No faculty assignments recorded for this run._")
+        return "\n".join(lines)
+
+    lines.append(
+        "_Each faculty member's total teaching load across every batch and semester in this run._"
+    )
+    lines.append("")
+    lines.append(
+        "| Faculty | Designation | Theory h | Lab h | Total h | Batches | Theory courses | Lab sessions |"
+    )
+    lines.append("| --- | --- | ---: | ---: | ---: | --- | ---: | ---: |")
+    for row in rows:
+        designation = row.designation_label
+        batches = ", ".join(row.batch_codes) or "—"
+        lines.append(
+            f"| {row.full_name} | {designation} | {row.theory_hours} | {row.lab_hours} | "
+            f"{row.total_hours} | {batches} | {row.theory_courses} | {row.lab_sessions} |"
+        )
+    return "\n".join(lines)
 
 
 def _build_facts(run: AllocationRunRead, slice_: _BatchSlice) -> BatchReportFacts:
@@ -210,6 +303,7 @@ def _faculty_rows_for_batch(
                 faculty_id=faculty_id,
                 full_name=summary.full_name if summary else f"Faculty #{faculty_id}",
                 designation_key=summary.designation_key if summary else None,
+                designation_label=designation_label_for(summary.designation_key if summary else None),
                 theory_hours=theory_hours,
                 lab_hours=lab_hours,
                 total_hours=theory_hours + lab_hours,
@@ -385,9 +479,8 @@ def _render_markdown(
         ]
     )
     for row in facts.faculty_rows:
-        designation = (row.designation_key or "—").replace("_", " ")
         lines.append(
-            f"| {row.full_name} | {designation} | {row.theory_hours} | {row.lab_hours} | "
+            f"| {row.full_name} | {row.designation_label} | {row.theory_hours} | {row.lab_hours} | "
             f"{row.total_hours} | {row.theory_courses} | {row.lab_sessions} |"
         )
     lines.append("")
