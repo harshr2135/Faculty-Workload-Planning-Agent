@@ -124,7 +124,7 @@ export function TimetableGridView({
           ))}
         </div>
       )}
-      <div className="overflow-x-auto rounded-lg border border-slate-300">
+      <div className="overflow-x-auto rounded-2xl border border-slate-200 shadow-soft">
       <table className="min-w-full border-collapse text-xs">
         <thead>
           <tr>

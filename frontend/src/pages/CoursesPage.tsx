@@ -42,6 +42,7 @@ export default function CoursesPage() {
   return (
     <>
       <PageHeader
+        eyebrow="Master data"
         title="Courses"
         description="Subjects per student batch and semester (PEC/SEC use lecture halls)"
         action={
@@ -49,7 +50,7 @@ export default function CoursesPage() {
             <select
               value={batch}
               onChange={(e) => setBatch(e.target.value === "all" ? "all" : e.target.value)}
-              className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+              className="ui-select"
             >
               <option value="all">All batches</option>
               {batchOptions.map((code) => (
@@ -63,7 +64,7 @@ export default function CoursesPage() {
               onChange={(e) =>
                 setSemester(e.target.value === "all" ? "all" : Number(e.target.value))
               }
-              className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+              className="ui-select"
             >
               <option value="all">All semesters</option>
               {semesterOptions.map((n) => (

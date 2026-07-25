@@ -15,8 +15,9 @@ export default defineConfig({
       "/api": {
         target: "http://127.0.0.1:8000",
         changeOrigin: true,
-        // CP-SAT allocation can run several minutes; keep above max_time_seconds budget.
+        // CP-SAT allocation / LLM report streams can run several minutes.
         timeout: 900_000,
+        proxyTimeout: 900_000,
       },
     },
   },

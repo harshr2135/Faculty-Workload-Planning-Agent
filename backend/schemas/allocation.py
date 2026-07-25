@@ -110,7 +110,8 @@ class FacultyWorkloadSummaryRead(BaseModel):
     designation_label: str = "—"
     theory_weekly_hours: int
     lab_weekly_hours: int
-    total_weekly_hours: int
+    # Teaching load (theory + lab/2); theory/lab columns remain contact hours.
+    total_weekly_hours: float
     theory_course_count: int
     lab_course_count: int
     lab_session_count: int

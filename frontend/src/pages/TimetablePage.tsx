@@ -19,7 +19,8 @@ export default function TimetablePage() {
   return (
     <>
       <PageHeader
-        title="Timetable"
+        eyebrow="Master data"
+        title="Time slots"
         description={
           data
             ? `${data.teaching_periods_per_day} teaching periods per working day`

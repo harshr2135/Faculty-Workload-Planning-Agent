@@ -1,6 +1,10 @@
-import { useMemo, useRef, useState } from "react";
-import { generateAllBatchesReport, generateBatchReport } from "@/api/allocations";
-import type { BatchReportSection } from "@/api/allocations";
+import { useEffect, useMemo, useRef, useState, type UIEvent } from "react";
+import {
+  streamAllBatchesReport,
+  streamBatchReport,
+  type BatchReportSection,
+  type ReportStreamEvent,
+} from "@/api/allocations";
 import type { AllocationRun, BatchSemesterPlan } from "@/types/api";
 import { MarkdownRenderer } from "./MarkdownRenderer";
 
@@ -33,6 +37,8 @@ function narrativeSourceLabel(source: string): string {
       return "AI unavailable — template fallback";
     case "template":
       return "Template";
+    case "all_batches":
+      return "All batches — AI-generated";
     default:
       return source;
   }
@@ -57,51 +63,134 @@ export function AllocationReportPanel({ result }: AllocationReportPanelProps) {
   const [sourceDisplay, setSourceDisplay] = useState<string | null>(null);
   const [reportScope, setReportScope] = useState<ReportScope>("single");
   const [viewMode, setViewMode] = useState<ViewMode>("formatted");
+  const [streamStatus, setStreamStatus] = useState<string | null>(null);
   const reportRef = useRef<HTMLDivElement>(null);
+  const sourceRef = useRef<HTMLPreElement>(null);
+  const stickToBottomRef = useRef(true);
+  const abortRef = useRef<AbortController | null>(null);
 
   const selectedPlan = useMemo(
     () => plans.find((plan) => planKey(plan) === selectedKey) ?? plans[0],
     [plans, selectedKey],
   );
 
+  useEffect(() => {
+    return () => {
+      abortRef.current?.abort();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!loading || !stickToBottomRef.current) {
+      return;
+    }
+    const container = viewMode === "formatted" ? reportRef.current : sourceRef.current;
+    if (!container) {
+      return;
+    }
+    container.scrollTop = container.scrollHeight;
+  }, [markdown, loading, viewMode]);
+
+  function handleReportScroll(event: UIEvent<HTMLElement>) {
+    const el = event.currentTarget;
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    // Stay pinned while streaming unless the user scrolls up to read earlier content.
+    stickToBottomRef.current = distanceFromBottom < 48;
+  }
+
+  function beginStream() {
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+    stickToBottomRef.current = true;
+    setLoading(true);
+    setError(null);
+    setMarkdown("");
+    setSourceDisplay(null);
+    setStreamStatus("Starting…");
+    return controller;
+  }
+
+  function handleStreamEvent(event: ReportStreamEvent, scope: ReportScope) {
+    if (event.type === "meta") {
+      setStreamStatus(scope === "all" ? "Writing cover & consolidated table…" : "Generating…");
+      return;
+    }
+    if (event.type === "batch_start") {
+      setStreamStatus(
+        `Batch ${event.index}/${event.total}: ${event.batch_code} · sem ${event.semester_number}`,
+      );
+      return;
+    }
+    if (event.type === "chunk") {
+      setMarkdown((prev) => `${prev ?? ""}${event.text}`);
+      return;
+    }
+    if (event.type === "done") {
+      if (event.sections && event.sections.length > 0) {
+        setSourceDisplay(allBatchesSourceLabel(event.sections));
+      } else {
+        setSourceDisplay(narrativeSourceLabel(event.narrative_source));
+      }
+      setStreamStatus(null);
+      return;
+    }
+    if (event.type === "error") {
+      setError(event.message);
+      setStreamStatus(null);
+    }
+  }
+
   async function handleGenerate() {
     if (!selectedPlan) {
       return;
     }
-    setLoading(true);
-    setError(null);
+    const controller = beginStream();
+    setReportScope("single");
     try {
-      const report = await generateBatchReport(result.id, {
-        batch_code: selectedPlan.batch_code,
-        semester_number: selectedPlan.semester_number,
-        report_mode: "llm_full_facts",
-      });
-      setMarkdown(report.markdown);
-      setSourceDisplay(narrativeSourceLabel(report.narrative_source));
-      setReportScope("single");
+      await streamBatchReport(
+        result.id,
+        {
+          batch_code: selectedPlan.batch_code,
+          semester_number: selectedPlan.semester_number,
+          report_mode: "llm_full_facts",
+        },
+        {
+          signal: controller.signal,
+          onEvent: (event) => handleStreamEvent(event, "single"),
+        },
+      );
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not generate report.");
-      setMarkdown(null);
+      if (!(err instanceof DOMException && err.name === "AbortError")) {
+        setError(err instanceof Error ? err.message : "Could not generate report.");
+        setMarkdown(null);
+      }
     } finally {
       setLoading(false);
+      setStreamStatus(null);
     }
   }
 
   async function handleGenerateAll() {
-    setLoading(true);
-    setError(null);
+    const controller = beginStream();
+    setReportScope("all");
     try {
-      const report = await generateAllBatchesReport(result.id, {
-        report_mode: "llm_full_facts",
-      });
-      setMarkdown(report.markdown);
-      setSourceDisplay(allBatchesSourceLabel(report.sections));
-      setReportScope("all");
+      await streamAllBatchesReport(
+        result.id,
+        { report_mode: "llm_full_facts" },
+        {
+          signal: controller.signal,
+          onEvent: (event) => handleStreamEvent(event, "all"),
+        },
+      );
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not generate combined report.");
-      setMarkdown(null);
+      if (!(err instanceof DOMException && err.name === "AbortError")) {
+        setError(err instanceof Error ? err.message : "Could not generate combined report.");
+        setMarkdown(null);
+      }
     } finally {
       setLoading(false);
+      setStreamStatus(null);
     }
   }
 
@@ -159,14 +248,17 @@ export function AllocationReportPanel({ result }: AllocationReportPanelProps) {
     return null;
   }
 
+  const hasMarkdown = markdown !== null && markdown.length > 0;
+
   return (
-    <section className="rounded-lg border border-slate-200 bg-white p-4">
-      <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
+    <section className="ui-section">
+      <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h2 className="text-lg font-semibold text-slate-900">Department report</h2>
-          <p className="text-sm text-slate-600">
+          <h2 className="text-lg font-semibold tracking-tight text-slate-900">Department report</h2>
+          <p className="mt-1 text-sm leading-relaxed text-slate-500">
             Generate an AI-written, HOD-ready summary for a batch and semester from this
             allocation run. Figures are grounded in the deterministic allocation facts.
+            Text streams live as the model writes.
           </p>
         </div>
       </div>
@@ -177,7 +269,8 @@ export function AllocationReportPanel({ result }: AllocationReportPanelProps) {
           <select
             value={selectedKey}
             onChange={(event) => setSelectedKey(event.target.value)}
-            className="rounded-lg border border-slate-300 bg-white px-3 py-2"
+            className="ui-select"
+            disabled={loading}
           >
             {plans.map((plan) => (
               <option key={planKey(plan)} value={planKey(plan)}>
@@ -190,39 +283,48 @@ export function AllocationReportPanel({ result }: AllocationReportPanelProps) {
           type="button"
           onClick={handleGenerate}
           disabled={loading}
-          className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-50"
+          className="ui-btn-primary"
         >
-          {loading ? "Generating…" : "Generate report"}
+          {loading && reportScope === "single" ? "Streaming…" : "Generate report"}
         </button>
         {plans.length > 1 && (
           <button
             type="button"
             onClick={handleGenerateAll}
             disabled={loading}
-            className="rounded-lg border border-slate-900 px-4 py-2 text-sm font-medium text-slate-900 hover:bg-slate-100 disabled:opacity-50"
+            className="ui-btn-secondary"
           >
-            {loading ? "Generating…" : `Generate for all batches (${plans.length})`}
+            {loading && reportScope === "all"
+              ? "Streaming…"
+              : `Generate for all batches (${plans.length})`}
           </button>
         )}
       </div>
 
       {plans.length > 1 && (
         <p className="mt-2 text-xs text-slate-500">
-          "All batches" produces one combined document covering every batch/semester in this run
-          (one AI call per batch).
+          "All batches" streams one combined document: cover and consolidated faculty table first,
+          then each batch in order.
+        </p>
+      )}
+
+      {streamStatus && (
+        <p className="mt-3 text-sm text-slate-600" aria-live="polite">
+          {streamStatus}
+          <span className="ml-1 inline-block h-2 w-2 animate-pulse rounded-full bg-emerald-500 align-middle" />
         </p>
       )}
 
       {error && <p className="mt-3 text-sm text-red-600">{error}</p>}
 
-      {markdown && (
+      {hasMarkdown && (
         <div className="mt-4 space-y-3">
           <div className="flex flex-wrap items-center gap-2">
-            <div className="inline-flex overflow-hidden rounded-lg border border-slate-300">
+            <div className="inline-flex overflow-hidden rounded-xl border border-slate-300 shadow-sm">
               <button
                 type="button"
                 onClick={() => setViewMode("formatted")}
-                className={`px-3 py-1.5 text-sm ${
+                className={`px-3 py-1.5 text-sm font-medium transition ${
                   viewMode === "formatted"
                     ? "bg-slate-900 text-white"
                     : "bg-white text-slate-700 hover:bg-slate-50"
@@ -233,7 +335,7 @@ export function AllocationReportPanel({ result }: AllocationReportPanelProps) {
               <button
                 type="button"
                 onClick={() => setViewMode("source")}
-                className={`px-3 py-1.5 text-sm ${
+                className={`px-3 py-1.5 text-sm font-medium transition ${
                   viewMode === "source"
                     ? "bg-slate-900 text-white"
                     : "bg-white text-slate-700 hover:bg-slate-50"
@@ -245,14 +347,16 @@ export function AllocationReportPanel({ result }: AllocationReportPanelProps) {
             <button
               type="button"
               onClick={handleDownloadMarkdown}
-              className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-50"
+              disabled={loading}
+              className="ui-btn-secondary px-3 py-1.5"
             >
               Download Markdown
             </button>
             <button
               type="button"
               onClick={handlePrintPdf}
-              className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-50"
+              disabled={loading}
+              className="ui-btn-secondary px-3 py-1.5"
             >
               Print / Save as PDF
             </button>
@@ -264,16 +368,21 @@ export function AllocationReportPanel({ result }: AllocationReportPanelProps) {
           </div>
           <div
             ref={reportRef}
+            onScroll={handleReportScroll}
             className={
               viewMode === "formatted"
-                ? "max-h-[36rem] overflow-auto rounded-lg border border-slate-200 bg-white p-6"
+                ? "max-h-[36rem] overflow-auto rounded-xl border border-slate-200 bg-white p-6 shadow-inner"
                 : "hidden"
             }
           >
-            <MarkdownRenderer content={markdown} />
+            <MarkdownRenderer content={markdown ?? ""} />
           </div>
           {viewMode === "source" && (
-            <pre className="max-h-[36rem] overflow-auto rounded-lg border border-slate-200 bg-slate-50 p-4 text-xs leading-relaxed text-slate-800 whitespace-pre-wrap">
+            <pre
+              ref={sourceRef}
+              onScroll={handleReportScroll}
+              className="max-h-[36rem] overflow-auto rounded-xl border border-slate-200 bg-slate-50 p-4 text-xs leading-relaxed text-slate-800 whitespace-pre-wrap"
+            >
               {markdown}
             </pre>
           )}
@@ -282,4 +391,3 @@ export function AllocationReportPanel({ result }: AllocationReportPanelProps) {
     </section>
   );
 }
-

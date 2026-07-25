@@ -4,17 +4,18 @@ Configurable workload rules for the optimization engine.
 
 ## Designation policies (seeded)
 
-| Designation | Min theory | Min lab courses | Weekly hours | Lab sessions |
-|-------------|------------|-----------------|--------------|--------------|
-| Assistant Professor | 2 | 4 | 22–24 | 4–5 |
-| Associate Professor | 2 | 2 | 20–22 | 2–3 |
-| Professor | 1 | 0 | 6–10 | — |
-| Professor & Chairperson | 1 | 0 | 6–10 | — |
+| Designation | Min theory | Min lab courses | Max weekly hours | Lab sessions |
+|-------------|------------|-----------------|------------------|--------------|
+| Assistant Professor | 2 | 4 | 16 | — (uncapped) |
+| Associate Professor | 2 | 2 | 12 | — (uncapped) |
+| Professor | 1 | 0 | 8 | — |
+| Professor & Chairperson | 1 | 0 | 4 | — |
 
 ## Planning rules
 
 | Policy key | Value | Meaning |
 |------------|-------|---------|
+| `lab_tutorial_hours_per_teaching_hour` | `2` | Two lab/tutorial contact hours count as **one** teaching hour toward weekly caps (theory is 1:1) |
 | `specialization_matching_strategy` | `similarity` | Infer course keywords and match similar faculty specializations (no manual mapping table) |
 | `specialization_fallback_designation` | `assistant_professor` | If no faculty has a similar specialization, assign an Assistant Professor |
 | `lab_session_continuity_rule` | enabled | Labs run as one continuous block (`practical_hours`) |

@@ -2,13 +2,17 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { fetchCourses, fetchStudentBatches } from "@/api/courses";
 import { fetchFaculty } from "@/api/faculty";
 import {
+  downloadTimetableExport,
+  emailFacultyTimetables,
   fetchAllocationRun,
   fetchAllocationRuns,
   runAllocation,
   updateAllocationRun,
+  type FacultyTimetableMailResult,
+  type TimetableExportFormat,
+  type TimetableExportPack,
 } from "@/api/allocations";
-import type { AllocationAssignment, AllocationRun, BatchSemesterPlanInput, Course } from "@/types/api";
-import { EditableAssignmentsTable } from "@/components/EditableAssignmentsTable";
+import type { AllocationRun, BatchSemesterPlanInput, Course } from "@/types/api";
 import { AllocationReportPanel } from "@/components/AllocationReportPanel";
 import {
   buildPecEnrollmentsPayload,
@@ -18,6 +22,7 @@ import {
 } from "@/components/PecCourseEnrollments";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { LoadingState } from "@/components/ui/LoadingState";
+import { TimetableGenerationLoader } from "@/components/TimetableGenerationLoader";
 import { ErrorState } from "@/components/ui/ErrorState";
 import { Badge } from "@/components/ui/Badge";
 import { TimetableGridView } from "@/components/TimetableGridView";
@@ -197,6 +202,7 @@ export default function AllocationsPage() {
   return (
     <>
       <PageHeader
+        eyebrow="Planning"
         title="Workload allocation"
         description="Each batch can be on a different semester — same as a real department planning cycle"
         action={
@@ -204,7 +210,7 @@ export default function AllocationsPage() {
             type="button"
             onClick={handleRun}
             disabled={loading || selectedBatches.length === 0}
-            className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-50"
+            className="ui-btn-primary"
           >
             {loading ? "Running…" : "Run allocation"}
           </button>
@@ -213,17 +219,13 @@ export default function AllocationsPage() {
       {batches.loading && <LoadingState />}
       {error && <ErrorState message={error} onRetry={handleRun} />}
       {loading && (
-        <LoadingState message="Assigning workload and building timetable (greedy, all batches)…" />
+        <TimetableGenerationLoader message="Assigning workload and building timetable (greedy, all batches)…" />
       )}
       {!batches.loading && allBatchCodes.length > 0 && (
-        <section className="mb-6 rounded-lg border border-slate-200 bg-white p-4">
-          <div className="mb-3 flex items-center justify-between gap-2">
-            <h2 className="text-sm font-semibold text-slate-900">Batches & semesters</h2>
-            <button
-              type="button"
-              onClick={selectAllBatches}
-              className="text-xs text-slate-600 underline hover:text-slate-900"
-            >
+        <section className="ui-section mb-6">
+          <div className="mb-4 flex items-center justify-between gap-2">
+            <h2 className="ui-section-title">Batches & semesters</h2>
+            <button type="button" onClick={selectAllBatches} className="ui-link-quiet">
               Select all
             </button>
           </div>
@@ -236,26 +238,29 @@ export default function AllocationsPage() {
               return (
                 <div
                   key={batch.batch_code}
-                  className={`rounded-lg border ${
-                    isSelected ? "border-slate-300 bg-white" : "border-slate-100 bg-slate-50/50"
+                  className={`rounded-xl border transition ${
+                    isSelected
+                      ? "border-emerald-200 bg-white shadow-sm ring-1 ring-emerald-100"
+                      : "border-slate-100 bg-slate-50/70"
                   }`}
                 >
-                  <div className="flex flex-wrap items-center gap-3 px-3 py-2.5">
+                  <div className="flex flex-wrap items-center gap-3 px-3.5 py-3">
                     <label className="inline-flex min-w-[6rem] items-center gap-2 font-medium text-slate-900">
                       <input
                         type="checkbox"
                         checked={isSelected}
                         onChange={() => toggleBatch(batch.batch_code)}
+                        className="h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
                       />
                       {batch.batch_code}
                     </label>
-                    <label className="inline-flex items-center gap-2 text-slate-600">
+                    <label className="inline-flex items-center gap-2 text-sm text-slate-600">
                       Semester
                       <select
                         value={semester}
                         onChange={(e) => setBatchSemester(batch.batch_code, Number(e.target.value))}
                         disabled={!isSelected}
-                        className="rounded border border-slate-300 bg-white px-2 py-1 disabled:opacity-50"
+                        className="ui-select py-1.5"
                       >
                         {SEMESTER_OPTIONS.map((n) => (
                           <option key={n} value={n}>
@@ -291,9 +296,9 @@ export default function AllocationsPage() {
         </section>
       )}
       {!batches.loading && (
-        <section className="mb-6 rounded-lg border border-slate-200 bg-white p-4">
-          <h2 className="text-sm font-semibold text-slate-900">Previous runs</h2>
-          <p className="mb-3 text-xs text-slate-600">
+        <section className="ui-section mb-6">
+          <h2 className="ui-section-title">Previous runs</h2>
+          <p className="mb-3 text-xs text-slate-500">
             Open a past allocation version without running again.
           </p>
           {savedPlans.loading && (
@@ -314,7 +319,7 @@ export default function AllocationsPage() {
                     void handleLoadPlan(runId);
                   }
                 }}
-                className="rounded-lg border border-slate-300 bg-white px-3 py-2"
+                className="ui-select"
               >
                 <option value="">
                   {(savedPlans.data?.length ?? 0) === 0
@@ -359,31 +364,17 @@ function AllocationResults({
   onPlansChanged: () => void;
 }) {
   const facultyRoster = useFetch(fetchFaculty);
-  const [isEditing, setIsEditing] = useState(false);
-  const [draftAssignments, setDraftAssignments] = useState<AllocationAssignment[]>([]);
   const [planName, setPlanName] = useState(result.plan_name ?? "");
   const [saveLoading, setSaveLoading] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
 
   useEffect(() => {
     setPlanName(result.plan_name ?? "");
-    setIsEditing(false);
-    setDraftAssignments(result.assignments.map((row) => ({ ...row })));
   }, [result.id]);
 
   const planLabel = result.batch_plans
     .map((plan) => `${plan.batch_code} (sem ${plan.semester_number}, ${plan.section_count} sec)`)
     .join(" · ");
-
-  function startEditing() {
-    setDraftAssignments(result.assignments.map((row) => ({ ...row })));
-    setIsEditing(true);
-  }
-
-  function cancelEditing() {
-    setDraftAssignments(result.assignments.map((row) => ({ ...row })));
-    setIsEditing(false);
-  }
 
   async function handleSavePlan() {
     const trimmedName = planName.trim();
@@ -397,10 +388,8 @@ function AllocationResults({
       const updated = await updateAllocationRun(result.id, {
         plan_name: trimmedName,
         is_saved: true,
-        assignments: isEditing ? draftAssignments : result.assignments,
       });
       onResultChange(updated);
-      setIsEditing(false);
       onPlansChanged();
     } catch (err) {
       setSaveError(err instanceof Error ? err.message : "Could not save plan.");
@@ -411,7 +400,7 @@ function AllocationResults({
 
   return (
     <div className="space-y-8">
-      <section className="rounded-lg border border-slate-200 bg-white p-4">
+      <section className="ui-section">
         <div className="flex flex-wrap items-end gap-3">
           <label className="flex min-w-[14rem] flex-1 flex-col gap-1 text-sm text-slate-700">
             Plan name
@@ -420,31 +409,14 @@ function AllocationResults({
               value={planName}
               onChange={(event) => setPlanName(event.target.value)}
               placeholder="e.g. AIML Sem 5 draft"
-              className="rounded-lg border border-slate-300 px-3 py-2"
+              className="ui-input"
             />
           </label>
-          {!isEditing ? (
-            <button
-              type="button"
-              onClick={startEditing}
-              className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
-            >
-              Edit assignments
-            </button>
-          ) : (
-            <button
-              type="button"
-              onClick={cancelEditing}
-              className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
-            >
-              Cancel edit
-            </button>
-          )}
           <button
             type="button"
             onClick={handleSavePlan}
             disabled={saveLoading}
-            className="rounded-lg bg-emerald-700 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-600 disabled:opacity-50"
+            className="ui-btn-accent"
           >
             {saveLoading ? "Saving…" : "Save plan"}
           </button>
@@ -472,7 +444,7 @@ function AllocationResults({
         {result.objective_value !== null && <span>objective {result.objective_value}</span>}
       </div>
       {result.messages.length > 0 && (
-        <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+        <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900 shadow-soft">
           {result.messages.map((msg) => (
             <p key={msg}>{msg}</p>
           ))}
@@ -491,7 +463,7 @@ function AllocationResults({
         </section>
       )}
       {result.timetable_messages.length > 0 && (
-        <div className="rounded-lg border border-sky-200 bg-sky-50 p-4 text-sm text-sky-900">
+        <div className="rounded-2xl border border-sky-200 bg-sky-50 p-4 text-sm text-sky-900 shadow-soft">
           {result.timetable_messages.map((msg) => (
             <p key={msg}>{msg}</p>
           ))}
@@ -506,28 +478,6 @@ function AllocationResults({
         <TimetableResults result={result} facultyRoster={facultyRoster} />
       )}
       <section>
-        <div className="mb-3 flex items-center justify-between gap-2">
-          <h2 className="text-lg font-semibold text-slate-900">Workload assignments</h2>
-          {isEditing && (
-            <span className="text-xs font-medium uppercase tracking-wide text-amber-700">
-              Editing — change faculty, then Save plan
-            </span>
-          )}
-        </div>
-        {facultyRoster.data ? (
-          <EditableAssignmentsTable
-            assignments={isEditing ? draftAssignments : result.assignments}
-            faculty={facultyRoster.data}
-            editing={isEditing}
-            onChange={setDraftAssignments}
-          />
-        ) : facultyRoster.loading ? (
-          <LoadingState message="Loading faculty roster…" />
-        ) : (
-          <ErrorState message={facultyRoster.error ?? "Faculty roster unavailable."} />
-        )}
-      </section>
-      <section>
         <h2 className="mb-3 text-lg font-semibold text-slate-900">Faculty workload</h2>
         <DataTable>
           <DataTableHead>
@@ -535,7 +485,7 @@ function AllocationResults({
             <DataTableHeaderCell>Designation</DataTableHeaderCell>
             <DataTableHeaderCell>Theory hrs</DataTableHeaderCell>
             <DataTableHeaderCell>Lab hrs</DataTableHeaderCell>
-            <DataTableHeaderCell>Total</DataTableHeaderCell>
+            <DataTableHeaderCell>Teaching load</DataTableHeaderCell>
             <DataTableHeaderCell>Theory courses</DataTableHeaderCell>
             <DataTableHeaderCell>Lab sessions</DataTableHeaderCell>
           </DataTableHead>
@@ -582,6 +532,11 @@ function TimetableResults({
   const [sectionKey, setSectionKey] = useState<string | null>(null);
   const [classroomKey, setClassroomKey] = useState<string | null>(null);
   const [laboratoryKey, setLaboratoryKey] = useState<string | null>(null);
+  const [exportingKey, setExportingKey] = useState<string | null>(null);
+  const [exportError, setExportError] = useState<string | null>(null);
+  const [emailLoading, setEmailLoading] = useState(false);
+  const [emailError, setEmailError] = useState<string | null>(null);
+  const [emailResult, setEmailResult] = useState<FacultyTimetableMailResult | null>(null);
 
   const facultyById = useMemo(
     () => new Map((facultyRoster.data ?? []).map((member) => [member.id, member])),
@@ -593,6 +548,39 @@ function TimetableResults({
   const classroomGrids = result.classroom_timetable_grids ?? [];
   const laboratoryGrids = result.laboratory_timetable_grids ?? [];
 
+  const handleExport = async (pack: TimetableExportPack, format: TimetableExportFormat) => {
+    const key = `${pack}:${format}`;
+    setExportError(null);
+    setExportingKey(key);
+    try {
+      await downloadTimetableExport(result.id, pack, format);
+    } catch (err) {
+      setExportError(err instanceof Error ? err.message : "Export failed.");
+    } finally {
+      setExportingKey(null);
+    }
+  };
+
+  const handleEmailFaculty = async () => {
+    const count = facultyGrids.length;
+    if (count === 0) return;
+    const confirmed = window.confirm(
+      `Send each faculty their personal timetable PDF?\n\n${count} recipient${count === 1 ? "" : "s"} will be emailed.`,
+    );
+    if (!confirmed) return;
+
+    setEmailError(null);
+    setEmailResult(null);
+    setEmailLoading(true);
+    try {
+      const summary = await emailFacultyTimetables(result.id);
+      setEmailResult(summary);
+    } catch (err) {
+      setEmailError(err instanceof Error ? err.message : "Email send failed.");
+    } finally {
+      setEmailLoading(false);
+    }
+  };
   const selectedFacultyGrid = useMemo(() => {
     if (facultyGrids.length === 0) {
       return null;
@@ -678,6 +666,115 @@ function TimetableResults({
             Greedy timetable across all selected batches (first available slot).
           </p>
         )}
+        <div className="mt-3 space-y-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+              Excel
+            </span>
+            <button
+              type="button"
+              onClick={() => void handleExport("faculty", "xlsx")}
+              disabled={exportingKey !== null || facultyGrids.length === 0}
+              className="ui-btn-secondary px-3 py-1.5"
+            >
+              {exportingKey === "faculty:xlsx" ? "Exporting…" : "Faculty"}
+            </button>
+            <button
+              type="button"
+              onClick={() => void handleExport("students", "xlsx")}
+              disabled={exportingKey !== null || sectionGrids.length === 0}
+              className="ui-btn-secondary px-3 py-1.5"
+            >
+              {exportingKey === "students:xlsx" ? "Exporting…" : "Students"}
+            </button>
+            <button
+              type="button"
+              onClick={() => void handleExport("rooms", "xlsx")}
+              disabled={
+                exportingKey !== null ||
+                (classroomGrids.length === 0 && laboratoryGrids.length === 0)
+              }
+              className="ui-btn-secondary px-3 py-1.5"
+            >
+              {exportingKey === "rooms:xlsx" ? "Exporting…" : "Rooms & labs"}
+            </button>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+              PDF
+            </span>
+            <button
+              type="button"
+              onClick={() => void handleExport("faculty", "pdf")}
+              disabled={exportingKey !== null || facultyGrids.length === 0}
+              className="ui-btn-secondary px-3 py-1.5"
+            >
+              {exportingKey === "faculty:pdf" ? "Exporting…" : "Faculty"}
+            </button>
+            <button
+              type="button"
+              onClick={() => void handleExport("students", "pdf")}
+              disabled={exportingKey !== null || sectionGrids.length === 0}
+              className="ui-btn-secondary px-3 py-1.5"
+            >
+              {exportingKey === "students:pdf" ? "Exporting…" : "Students"}
+            </button>
+            <button
+              type="button"
+              onClick={() => void handleExport("rooms", "pdf")}
+              disabled={
+                exportingKey !== null ||
+                (classroomGrids.length === 0 && laboratoryGrids.length === 0)
+              }
+              className="ui-btn-secondary px-3 py-1.5"
+            >
+              {exportingKey === "rooms:pdf" ? "Exporting…" : "Rooms & labs"}
+            </button>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+              Email
+            </span>
+            <button
+              type="button"
+              onClick={() => void handleEmailFaculty()}
+              disabled={emailLoading || exportingKey !== null || facultyGrids.length === 0}
+              className="rounded-lg bg-slate-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-50"
+            >
+              {emailLoading
+                ? "Sending…"
+                : `Email faculty timetables (${facultyGrids.length})`}
+            </button>
+          </div>
+        </div>
+        {exportError && <p className="mt-2 text-sm text-red-600">{exportError}</p>}
+        {emailError && <p className="mt-2 text-sm text-red-600">{emailError}</p>}
+        {emailResult && (
+          <div className="mt-2 rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm text-slate-800">
+            <p>
+              Email summary: <strong>{emailResult.sent}</strong> sent,{" "}
+              <strong>{emailResult.skipped}</strong> skipped,{" "}
+              <strong>{emailResult.failed}</strong> failed
+              {emailResult.recipient_count > 0
+                ? ` (of ${emailResult.recipient_count} faculty with load)`
+                : ""}
+              .
+            </p>
+            {emailResult.details.filter((row) => row.status !== "sent").length > 0 && (
+              <ul className="mt-2 list-disc space-y-1 pl-5 text-xs text-slate-600">
+                {emailResult.details
+                  .filter((row) => row.status !== "sent")
+                  .slice(0, 8)
+                  .map((row) => (
+                    <li key={row.faculty_id}>
+                      {row.full_name}
+                      {row.email ? ` <${row.email}>` : ""} — {row.status}: {row.message}
+                    </li>
+                  ))}
+              </ul>
+            )}
+          </div>
+        )}
       </div>
       <div className="flex flex-wrap gap-2">
         <button type="button" onClick={() => setTab("sections")} className={tabClass(tab === "sections")}>
@@ -721,7 +818,7 @@ function TimetableResults({
                 selectedSectionGrid.section_index,
               )}
               onChange={(e) => setSectionKey(e.target.value)}
-              className="rounded-lg border border-slate-300 bg-white px-3 py-2"
+              className="ui-select"
             >
               {sectionGrids.map((item) => (
                 <option
@@ -759,7 +856,7 @@ function TimetableResults({
             <select
               value={selectedFacultyGrid.faculty_id}
               onChange={(e) => setFacultyId(Number(e.target.value))}
-              className="rounded-lg border border-slate-300 bg-white px-3 py-2"
+              className="ui-select"
             >
               {facultyGrids.map((item) => (
                 <option key={item.faculty_id} value={item.faculty_id}>
@@ -778,7 +875,7 @@ function TimetableResults({
             <select
               value={roomGridKey(selectedClassroomGrid.room_type, selectedClassroomGrid.room_name)}
               onChange={(e) => setClassroomKey(e.target.value)}
-              className="rounded-lg border border-slate-300 bg-white px-3 py-2"
+              className="ui-select"
             >
               {classroomGrids.map((item) => (
                 <option
@@ -800,7 +897,7 @@ function TimetableResults({
             <select
               value={roomGridKey(selectedLaboratoryGrid.room_type, selectedLaboratoryGrid.room_name)}
               onChange={(e) => setLaboratoryKey(e.target.value)}
-              className="rounded-lg border border-slate-300 bg-white px-3 py-2"
+              className="ui-select"
             >
               {laboratoryGrids.map((item) => (
                 <option

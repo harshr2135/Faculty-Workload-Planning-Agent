@@ -63,6 +63,8 @@ def recompute_faculty_summaries(
     faculty_by_id: dict[int, FacultyMember],
 ) -> list[dict]:
     """Rebuild faculty workload summaries from assignment rows."""
+    from backend.core.domain.teaching_load import teaching_load_hours
+
     aggregates: dict[int, dict] = {}
 
     def ensure_faculty(faculty_id: int) -> dict:
@@ -76,7 +78,7 @@ def recompute_faculty_summaries(
                 ),
                 "theory_weekly_hours": 0,
                 "lab_weekly_hours": 0,
-                "total_weekly_hours": 0,
+                "total_weekly_hours": 0.0,
                 "theory_course_count": 0,
                 "lab_course_count": 0,
                 "lab_session_count": 0,
@@ -107,8 +109,9 @@ def recompute_faculty_summaries(
         lab_courses = summary.pop("_lab_courses")
         summary["theory_course_count"] = len(theory_courses)
         summary["lab_course_count"] = len(lab_courses)
-        summary["total_weekly_hours"] = (
-            summary["theory_weekly_hours"] + summary["lab_weekly_hours"]
+        summary["total_weekly_hours"] = teaching_load_hours(
+            theory_contact_hours=summary["theory_weekly_hours"],
+            lab_contact_hours=summary["lab_weekly_hours"],
         )
         summaries.append(summary)
 

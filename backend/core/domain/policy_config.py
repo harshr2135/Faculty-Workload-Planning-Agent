@@ -21,13 +21,12 @@ class DesignationPolicyDefinition:
     match_keywords: tuple[str, ...]
 
 
-# AICTE-based per-designation workload rules for the AIML department.
+# Per-designation workload rules for the AIML department.
 #   - Weekly-hour maximums are HARD: no faculty member is ever assigned beyond the cap,
 #     even if that leaves a course uncovered (surfaced as an infeasible allocation).
 #   - Lab-session maximums are SOFT: the allocator prefers to stay within them but will
 #     exceed them when necessary; overages are reported as violations.
 #   - Minimums (theory courses, lab sessions) are SOFT targets reported as violations.
-#   - Weekly-hour maximums use the upper bound of the AICTE range.
 #   - Lab minima/maxima are measured in scheduled lab SESSIONS (B1/B2 counted separately).
 AIML_DESIGNATION_POLICIES: list[DesignationPolicyDefinition] = [
     DesignationPolicyDefinition(
@@ -36,9 +35,9 @@ AIML_DESIGNATION_POLICIES: list[DesignationPolicyDefinition] = [
         min_theory_courses=2,
         min_lab_courses=0,
         min_weekly_hours=0.0,
-        max_weekly_hours=24.0,
-        min_lab_sessions=4,
-        max_lab_sessions=5,
+        max_weekly_hours=16.0,
+        min_lab_sessions=None,
+        max_lab_sessions=None,
         match_keywords=("assistant professor",),
     ),
     DesignationPolicyDefinition(
@@ -47,9 +46,9 @@ AIML_DESIGNATION_POLICIES: list[DesignationPolicyDefinition] = [
         min_theory_courses=2,
         min_lab_courses=0,
         min_weekly_hours=0.0,
-        max_weekly_hours=22.0,
-        min_lab_sessions=2,
-        max_lab_sessions=3,
+        max_weekly_hours=12.0,
+        min_lab_sessions=None,
+        max_lab_sessions=None,
         match_keywords=("associate professor",),
     ),
     DesignationPolicyDefinition(
@@ -58,7 +57,7 @@ AIML_DESIGNATION_POLICIES: list[DesignationPolicyDefinition] = [
         min_theory_courses=1,
         min_lab_courses=0,
         min_weekly_hours=0.0,
-        max_weekly_hours=10.0,
+        max_weekly_hours=8.0,
         min_lab_sessions=None,
         max_lab_sessions=None,
         match_keywords=("professor",),
@@ -69,7 +68,7 @@ AIML_DESIGNATION_POLICIES: list[DesignationPolicyDefinition] = [
         min_theory_courses=1,
         min_lab_courses=0,
         min_weekly_hours=0.0,
-        max_weekly_hours=10.0,
+        max_weekly_hours=4.0,
         min_lab_sessions=None,
         max_lab_sessions=None,
         match_keywords=("chairperson", "chairpe"),
@@ -77,6 +76,10 @@ AIML_DESIGNATION_POLICIES: list[DesignationPolicyDefinition] = [
 ]
 
 LAB_FACULTY_PER_SESSION = 2
+
+# AICTE: two laboratory / tutorial contact hours count as one teaching hour toward
+# designation weekly-hour caps. Timetable still uses full contact duration.
+LAB_TUTORIAL_HOURS_PER_TEACHING_HOUR = 2
 
 PLANNING_POLICY_DEFINITIONS: list[tuple[str, str, str | None]] = [
     (
@@ -100,6 +103,12 @@ PLANNING_POLICY_DEFINITIONS: list[tuple[str, str, str | None]] = [
         "lab_faculty_per_session",
         str(LAB_FACULTY_PER_SESSION),
         "Each laboratory session must have exactly two faculty members allocated.",
+    ),
+    (
+        "lab_tutorial_hours_per_teaching_hour",
+        str(LAB_TUTORIAL_HOURS_PER_TEACHING_HOUR),
+        "Two laboratory or tutorial contact hours count as one teaching hour toward "
+        "weekly workload caps (theory hours count one-for-one).",
     ),
     (
         "lab_max_capacity",
@@ -182,6 +191,10 @@ _DESIGNATION_LABELS_BY_KEY: dict[str, str] = {
     policy.designation_key: policy.designation_label for policy in AIML_DESIGNATION_POLICIES
 }
 
+_DESIGNATION_MAX_HOURS_BY_KEY: dict[str, float] = {
+    policy.designation_key: policy.max_weekly_hours for policy in AIML_DESIGNATION_POLICIES
+}
+
 
 def designation_label_for(designation_key: str | None) -> str:
     """Human-readable designation label for a policy key (e.g. 'Assistant Professor').
@@ -193,6 +206,16 @@ def designation_label_for(designation_key: str | None) -> str:
     return _DESIGNATION_LABELS_BY_KEY.get(
         designation_key, designation_key.replace("_", " ").title()
     )
+
+
+def max_weekly_hours_for(designation_key: str | None) -> float | None:
+    """AICTE weekly-hour maximum for a designation key, or None when unlimited/unknown."""
+    if not designation_key:
+        return None
+    cap = _DESIGNATION_MAX_HOURS_BY_KEY.get(designation_key)
+    if cap is None or cap >= UNLIMITED_MAX_WEEKLY_HOURS:
+        return None
+    return cap
 
 
 def resolve_designation_key(designation: str) -> str | None:

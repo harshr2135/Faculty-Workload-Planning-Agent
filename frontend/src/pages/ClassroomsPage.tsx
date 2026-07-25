@@ -22,6 +22,7 @@ export default function ClassroomsPage() {
   return (
     <>
       <PageHeader
+        eyebrow="Master data"
         title="Rooms"
         description="Department classrooms and college lecture halls (PEC/SEC combined sections)"
       />

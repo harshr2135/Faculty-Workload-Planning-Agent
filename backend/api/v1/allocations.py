@@ -1,6 +1,9 @@
 """Allocation run API routes."""
 
+from collections.abc import AsyncIterator
+
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import Response, StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.database.session import get_db_session
@@ -17,8 +20,27 @@ from backend.schemas.allocation_report import (
     BatchReportRequest,
     BatchReportResponse,
 )
-from backend.ai.services.report_service import build_all_batches_report, build_batch_report
+from backend.ai.services.report_service import (
+    build_all_batches_report,
+    build_batch_report,
+    format_sse,
+    stream_all_batches_report_events,
+    stream_batch_report_events,
+)
 from backend.services.allocation_service import AllocationService
+from backend.services.timetable_export_service import (
+    TimetableExportError,
+    TimetableExportFormat,
+    TimetableExportPack,
+    export_filename,
+    export_media_type,
+    export_timetable_pack,
+)
+from backend.schemas.timetable_mail import FacultyTimetableMailResult
+from backend.services.timetable_mail_service import (
+    SmtpNotConfiguredError,
+    TimetableMailService,
+)
 
 router = APIRouter(tags=["allocations"])
 
@@ -96,6 +118,57 @@ async def get_allocation_run(
     return result
 
 
+@router.get("/allocations/{run_id}/export/timetable/{pack}")
+async def export_allocation_timetable(
+    run_id: int,
+    pack: TimetableExportPack,
+    format: TimetableExportFormat = TimetableExportFormat.XLSX,
+    session: AsyncSession = Depends(get_db_session),
+) -> Response:
+    """Download a timetable pack as Excel or PDF (faculty | students | rooms)."""
+    service = AllocationService()
+    run = await service.get_run(session, run_id)
+    if run is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Allocation run not found.")
+    try:
+        payload = export_timetable_pack(run, pack, format)
+    except TimetableExportError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    filename = export_filename(run, pack, format)
+    return Response(
+        content=payload,
+        media_type=export_media_type(format),
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+        },
+    )
+
+
+@router.post(
+    "/allocations/{run_id}/email/faculty-timetables",
+    response_model=FacultyTimetableMailResult,
+)
+async def email_faculty_timetables(
+    run_id: int,
+    session: AsyncSession = Depends(get_db_session),
+) -> FacultyTimetableMailResult:
+    """Email each faculty member with teaching load their personal timetable PDF."""
+    service = AllocationService()
+    run = await service.get_run(session, run_id)
+    if run is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Allocation run not found.")
+    if not run.faculty_timetable_grids:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No faculty timetable grids available for this run.",
+        )
+    try:
+        return await TimetableMailService().send_faculty_timetables(session, run)
+    except SmtpNotConfiguredError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
 @router.post("/allocations/{run_id}/reports/batch-summary", response_model=BatchReportResponse)
 async def generate_batch_summary_report(
     run_id: int,
@@ -118,6 +191,43 @@ async def generate_batch_summary_report(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
 
+@router.post("/allocations/{run_id}/reports/batch-summary/stream")
+async def stream_batch_summary_report(
+    run_id: int,
+    body: BatchReportRequest,
+    session: AsyncSession = Depends(get_db_session),
+) -> StreamingResponse:
+    """Stream a single-batch report as Server-Sent Events (meta / chunk / done)."""
+    service = AllocationService()
+    run = await service.get_run(session, run_id)
+    if run is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Allocation run not found.")
+
+    async def event_source() -> AsyncIterator[str]:
+        try:
+            async for event in stream_batch_report_events(
+                run,
+                batch_code=body.batch_code,
+                semester_number=body.semester_number,
+                report_mode=body.report_mode,
+            ):
+                yield format_sse(event)
+        except ValueError as exc:
+            yield format_sse({"type": "error", "message": str(exc)})
+        except Exception:
+            yield format_sse({"type": "error", "message": "Report streaming failed."})
+
+    return StreamingResponse(
+        event_source(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
 @router.post("/allocations/{run_id}/reports/all-batches", response_model=AllBatchesReportResponse)
 async def generate_all_batches_report(
     run_id: int,
@@ -133,3 +243,33 @@ async def generate_all_batches_report(
         return await build_all_batches_report(run, report_mode=body.report_mode)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
+@router.post("/allocations/{run_id}/reports/all-batches/stream")
+async def stream_all_batches_report(
+    run_id: int,
+    body: AllBatchesReportRequest,
+    session: AsyncSession = Depends(get_db_session),
+) -> StreamingResponse:
+    """Stream a combined all-batches report as SSE (cover first, then each batch in order)."""
+    service = AllocationService()
+    run = await service.get_run(session, run_id)
+    if run is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Allocation run not found.")
+
+    async def event_source() -> AsyncIterator[str]:
+        try:
+            async for event in stream_all_batches_report_events(run, report_mode=body.report_mode):
+                yield format_sse(event)
+        except Exception:
+            yield format_sse({"type": "error", "message": "Combined report streaming failed."})
+
+    return StreamingResponse(
+        event_source(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )

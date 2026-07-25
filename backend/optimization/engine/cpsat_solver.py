@@ -7,6 +7,7 @@ import math
 from ortools.sat.python import cp_model
 
 from backend.core.domain.policy_config import UNLIMITED_MAX_WEEKLY_HOURS
+from backend.core.domain.teaching_load import teaching_load_hours
 from backend.optimization.engine.solver_tuning import apply_cpsat_performance
 from backend.optimization.models.problem_definition import AssignmentSlot, SlotKind, SolverConfig, WorkloadProblem
 from backend.optimization.models.solution import (
@@ -96,14 +97,17 @@ class WorkloadCpsatSolver:
             ]
             model.Add(sum(candidates) == problem.lab_faculty_per_session)
 
-        # Max weekly hours per faculty (theory + lab) — skipped when caps are disabled.
+        # Max weekly teaching-load hours per faculty (theory 1:1; lab/tutorial at half weight
+        # per AICTE). Contact hours on the timetable are unchanged. Skipped when caps disabled.
+        denom = max(1, problem.lab_tutorial_hours_per_teaching_hour)
         faculty_loads: dict[int, cp_model.LinearExpr] = {}
         for faculty in problem.faculty:
             terms: list[cp_model.LinearExpr] = []
             for slot in theory_slots:
                 key = (faculty.id, slot.slot_id)
                 if key in theory_vars:
-                    terms.append(theory_vars[key] * slot.weekly_hours)
+                    # Scale theory by denom so lab contact hours can enter at weight 1.
+                    terms.append(theory_vars[key] * slot.weekly_hours * denom)
             for slot in lab_slots:
                 key = (faculty.id, slot.slot_id)
                 if key in lab_vars:
@@ -111,13 +115,13 @@ class WorkloadCpsatSolver:
             if terms:
                 faculty_loads[faculty.id] = sum(terms)
 
-        # Hard AICTE maximum weekly hours: a faculty member's total load may never exceed
-        # the designation cap. May render the problem infeasible if capacity is insufficient.
+        # Hard AICTE maximum weekly teaching-load hours: never exceed the designation cap.
+        # Constraint uses scaled units: teaching_load * denom <= max * denom.
         for faculty in problem.faculty:
             load = faculty_loads.get(faculty.id)
             if load is None or faculty.max_weekly_hours >= UNLIMITED_MAX_WEEKLY_HOURS:
                 continue
-            model.Add(load <= int(faculty.max_weekly_hours))
+            model.Add(load <= int(faculty.max_weekly_hours) * denom)
 
         # ---- Quality objective (dominant): teaching fit + policy softness ----
         # Prefer specialization matches; penalize lab-session overages and one faculty
@@ -196,8 +200,9 @@ class WorkloadCpsatSolver:
                 objective_value=None,
                 messages=[
                     "Solver could not find a feasible assignment. This can happen when the "
-                    "AICTE weekly-hour caps leave too little capacity to cover every course. "
-                    "Try adding eligible faculty, raising the hour caps, or reducing course load."
+                    "AICTE weekly teaching-load caps (lab/tutorial at half weight) leave too "
+                    "little capacity to cover every course. Try adding eligible faculty, "
+                    "raising the hour caps, or reducing course load."
                 ],
             )
 
@@ -230,15 +235,17 @@ class WorkloadCpsatSolver:
         """Build load-balancing objective terms.
 
         Preferred mode (>=2 faculty with a real cap): proportional balancing. Each faculty's
-        hours are scaled into a common utilization space (``load * scale / cap``) so that equal
-        scaled loads mean equal utilization — i.e. hours distributed in proportion to caps. The
-        L1 spread of these scaled loads around a free target is minimized.
+        teaching-load hours (lab/tutorial half-weighted) are scaled into a common utilization
+        space (``load * scale / cap``) so equal scaled loads mean equal utilization — i.e. hours
+        distributed in proportion to caps. The L1 spread of these scaled loads around a free
+        target is minimized.
 
         Fallback (fewer than two real caps): plain peak-load minimization.
 
         Returns the objective terms plus a provable upper bound on their total, used to weight
         the dominant quality objective above them.
         """
+        denom = max(1, problem.lab_tutorial_hours_per_teaching_hour)
         capped = [
             faculty
             for faculty in problem.faculty
@@ -249,12 +256,15 @@ class WorkloadCpsatSolver:
         if len(capped) < 2:
             if not faculty_loads:
                 return [], 0
-            max_load = model.NewIntVar(0, 10_000, "max_faculty_load")
+            max_load = model.NewIntVar(0, 10_000 * denom, "max_faculty_load")
             for load in faculty_loads.values():
                 model.Add(max_load >= load)
-            return [max_load * config.balance_penalty], 10_000 * config.balance_penalty
+            return [max_load * config.balance_penalty], 10_000 * denom * config.balance_penalty
 
-        caps = {faculty.id: int(round(faculty.max_weekly_hours)) for faculty in capped}
+        # Caps are in the same scaled units as faculty_loads (teaching_load * denom).
+        caps = {
+            faculty.id: int(round(faculty.max_weekly_hours)) * denom for faculty in capped
+        }
         scale = _utilization_scale(list(caps.values()))
         penalty = config.proportional_balance_penalty
 
@@ -404,7 +414,11 @@ def _build_summaries(
                 designation_key=faculty.designation_key,
                 theory_weekly_hours=theory_hours,
                 lab_weekly_hours=lab_hours,
-                total_weekly_hours=theory_hours + lab_hours,
+                total_weekly_hours=teaching_load_hours(
+                    theory_contact_hours=theory_hours,
+                    lab_contact_hours=lab_hours,
+                    hours_per_teaching_hour=problem.lab_tutorial_hours_per_teaching_hour,
+                ),
                 theory_course_count=len(theory_courses),
                 lab_course_count=len(lab_courses),
                 lab_session_count=lab_sessions,

@@ -4,7 +4,13 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from backend.ai.services.report_service import build_all_batches_report, build_batch_report
+from backend.ai.services.report_service import (
+    build_all_batches_report,
+    build_batch_report,
+    format_sse,
+    stream_all_batches_report_events,
+    stream_batch_report_events,
+)
 from backend.schemas.allocation import (
     AllocationRunRead,
     BatchSemesterPlanRead,
@@ -137,10 +143,19 @@ async def test_all_batches_report_includes_consolidated_faculty_table() -> None:
         _multi_batch_run(),
         report_mode=ReportMode.TEMPLATE,
     )
-    assert "Consolidated faculty workload (all batches)" in response.markdown
+    assert "Overall faculty allocation" in response.markdown
     # Consolidated section lists each faculty's batches; Dr Alpha teaches 2023-27, Dr Beta 2022-26.
     assert "Dr Alpha" in response.markdown
     assert "Dr Beta" in response.markdown
+    assert "Faculty teaching by batch" in response.markdown
+    assert "AICTE max h" in response.markdown
+    assert "not per batch" in response.markdown
+    # Faculty allocation appears once at the top, not as a repeated per-batch hours table.
+    assert response.markdown.count("## Overall faculty allocation") == 1
+    assert "Faculty workload (this batch" not in response.markdown
+    # No batch-scoped policy-warnings heading; warnings only appear when the run has them.
+    assert "Policy warnings (run-wide)" not in response.markdown
+    assert "## Policy warnings" not in response.markdown.split("## Overall faculty allocation")[0]
 
 
 @pytest.mark.asyncio
@@ -181,7 +196,8 @@ async def test_llm_full_facts_mode(mock_full: AsyncMock, _available: object) -> 
         report_mode=ReportMode.LLM_FULL_FACTS,
     )
     assert report.narrative_source == "llm_full_facts"
-    assert report.markdown == "# AI Report\n\nFull facts body."
+    assert "Overall faculty allocation" in report.markdown
+    assert "Full facts body." in report.markdown
     mock_full.assert_awaited_once()
     assert mock_full.await_args.kwargs["mode"] == "facts"
 
@@ -217,4 +233,81 @@ async def test_llm_mode_falls_back_when_ai_unavailable(_available: object) -> No
     )
     assert report.narrative_source == "llm_unavailable"
     assert "Department Workload Summary" in report.markdown
+
+
+def test_format_sse_wraps_json_data_frame() -> None:
+    frame = format_sse({"type": "chunk", "text": "Hello"})
+    assert frame.startswith("data: ")
+    assert frame.endswith("\n\n")
+    assert '"type": "chunk"' in frame
+    assert '"text": "Hello"' in frame
+
+
+@pytest.mark.asyncio
+async def test_stream_batch_report_template_emits_chunk_and_done() -> None:
+    events = [
+        event
+        async for event in stream_batch_report_events(
+            _minimal_run(),
+            batch_code="2023-27",
+            semester_number=5,
+            report_mode=ReportMode.TEMPLATE,
+        )
+    ]
+    assert events[0]["type"] == "meta"
+    assert events[0]["scope"] == "single"
+    assert any(event["type"] == "chunk" and "Department Workload Summary" in event["text"] for event in events)
+    assert events[-1] == {"type": "done", "narrative_source": "template"}
+
+
+@pytest.mark.asyncio
+@patch("backend.ai.services.report_service.ai_narrative_available", return_value=True)
+async def test_stream_batch_report_yields_llm_deltas(_available: object) -> None:
+    async def _fake_stream(*_args: object, **_kwargs: object):
+        for piece in ("# Live", " report", "\n\nBody"):
+            yield piece
+
+    with patch(
+        "backend.ai.services.report_service.stream_full_report_markdown",
+        side_effect=_fake_stream,
+    ):
+        events = [
+            event
+            async for event in stream_batch_report_events(
+                _minimal_run(),
+                batch_code="2023-27",
+                semester_number=5,
+                report_mode=ReportMode.LLM_FULL_FACTS,
+            )
+        ]
+
+    chunks = [event["text"] for event in events if event["type"] == "chunk"]
+    joined = "".join(chunks)
+    assert "Overall faculty allocation" in joined
+    assert "# Live report\n\nBody" in joined
+    assert events[-1] == {"type": "done", "narrative_source": "llm_full_facts"}
+
+
+@pytest.mark.asyncio
+@patch("backend.ai.services.report_service.ai_narrative_available", return_value=False)
+async def test_stream_all_batches_emits_cover_then_batches(_available: object) -> None:
+    events = [
+        event
+        async for event in stream_all_batches_report_events(
+            _multi_batch_run(),
+            report_mode=ReportMode.LLM_FULL_FACTS,
+        )
+    ]
+    assert events[0]["type"] == "meta"
+    assert events[0]["scope"] == "all"
+    assert events[0]["batch_count"] == 2
+    joined = "".join(event["text"] for event in events if event["type"] == "chunk")
+    assert "Department Workload Report — All Batches" in joined
+    assert "Overall faculty allocation" in joined
+    assert "Faculty teaching by batch" in joined
+    batch_starts = [event for event in events if event["type"] == "batch_start"]
+    assert len(batch_starts) == 2
+    assert events[-1]["type"] == "done"
+    assert len(events[-1]["sections"]) == 2
+    assert joined.count("## Overall faculty allocation") == 1
 

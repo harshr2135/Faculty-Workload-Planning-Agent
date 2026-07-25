@@ -13,7 +13,12 @@ from backend.core.domain.aiml_config import DEPARTMENT_NAME, WEEKDAYS_MON_FRI
 from backend.core.domain.course_type_config import is_pec_course_type, requires_room_allocation
 from backend.core.domain.pec_config import delivery_requires_lecture_hall
 from backend.core.domain.batch_planning import default_batch_plans
-from backend.core.domain.policy_config import LAB_FACULTY_PER_SESSION, UNLIMITED_MAX_WEEKLY_HOURS, resolve_designation_key
+from backend.core.domain.policy_config import (
+    LAB_FACULTY_PER_SESSION,
+    LAB_TUTORIAL_HOURS_PER_TEACHING_HOUR,
+    UNLIMITED_MAX_WEEKLY_HOURS,
+    resolve_designation_key,
+)
 from backend.models import (
     AllocationRun,
     Classroom,
@@ -516,6 +521,7 @@ class AllocationService:
             faculty=tuple(faculty_inputs),
             courses=tuple(course_inputs),
             slots=tuple(slots),
+            lab_tutorial_hours_per_teaching_hour=LAB_TUTORIAL_HOURS_PER_TEACHING_HOUR,
         )
         assert primary_batch is not None and primary_semester is not None
         return problem, primary_batch, primary_semester, pec_catalogs

@@ -40,6 +40,7 @@ export default function PoliciesPage() {
   return (
     <>
       <PageHeader
+        eyebrow="Planning"
         title="Policies"
         description="AICTE workload rules and department planning policies"
       />
@@ -48,7 +49,7 @@ export default function PoliciesPage() {
       {!loading && !error && data && (
         <div className="space-y-8">
           <section>
-            <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-500">
+            <h2 className="mb-3 text-[11px] font-semibold uppercase tracking-[0.08em] text-slate-500">
               Designation workload (AICTE)
             </h2>
             <DataTable>
@@ -81,15 +82,12 @@ export default function PoliciesPage() {
           </section>
 
           <section>
-            <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-500">
+            <h2 className="mb-3 text-[11px] font-semibold uppercase tracking-[0.08em] text-slate-500">
               Planning rules
             </h2>
             <div className="space-y-3">
               {data.planning_policies.map((policy) => (
-                <div
-                  key={policy.id}
-                  className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm"
-                >
+                <div key={policy.id} className="ui-card p-4">
                   <p className="font-mono text-xs text-emerald-700">{policy.policy_key}</p>
                   <p className="mt-1 text-sm font-medium text-slate-900">{policy.policy_value}</p>
                   {policy.description && (

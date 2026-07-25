@@ -49,16 +49,37 @@ class PecReportRow(BaseModel):
     room_type: str | None = None
 
 
+class FacultyTeachingAssignment(BaseModel):
+    """One teaching assignment for a faculty member within a batch."""
+
+    batch_code: str
+    course_code: str
+    course_name: str
+    kind: str
+    weekly_hours: int
+    lab_sub_batch: str | None = None
+    section_indices: list[int] = Field(default_factory=list)
+
+
 class FacultyReportRow(BaseModel):
     faculty_id: int
     full_name: str
     designation_key: str | None
     designation_label: str = "—"
+    # Hours / counts for this batch only.
     theory_hours: int
     lab_hours: int
-    total_hours: int
+    # Teaching load (theory + lab/2); theory/lab remain contact hours.
+    total_hours: float
     theory_courses: int
     lab_sessions: int
+    # Run-wide totals (all batches in the allocation) — AICTE policy scope.
+    overall_theory_hours: int = 0
+    overall_lab_hours: int = 0
+    overall_total_hours: float = 0
+    overall_theory_courses: int = 0
+    overall_lab_sessions: int = 0
+    max_weekly_hours: float | None = None
 
 
 class ConsolidatedFacultyRow(BaseModel):
@@ -70,10 +91,13 @@ class ConsolidatedFacultyRow(BaseModel):
     designation_label: str = "—"
     theory_hours: int
     lab_hours: int
-    total_hours: int
+    # Teaching load (theory + lab/2); theory/lab remain contact hours.
+    total_hours: float
     batch_codes: list[str]
     theory_courses: int
     lab_sessions: int
+    max_weekly_hours: float | None = None
+    teaching_assignments: list[FacultyTeachingAssignment] = Field(default_factory=list)
 
 
 class BatchReportFacts(BaseModel):

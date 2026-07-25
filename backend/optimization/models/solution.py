@@ -39,7 +39,8 @@ class FacultyWorkloadSummary:
     designation_key: str | None
     theory_weekly_hours: int
     lab_weekly_hours: int
-    total_weekly_hours: int
+    # Teaching load toward AICTE caps (theory + lab/2 + tutorial/2), not raw contact total.
+    total_weekly_hours: float
     theory_course_count: int
     lab_course_count: int
     lab_session_count: int

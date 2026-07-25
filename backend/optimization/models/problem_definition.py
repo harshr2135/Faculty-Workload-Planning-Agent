@@ -84,6 +84,8 @@ class WorkloadProblem:
     slots: tuple[AssignmentSlot, ...]
     lecture_hall_min_sections: int = 2
     lecture_hall_max_sections: int = 3
+    # Contact hours of lab/tutorial that equal one teaching-load hour (AICTE default: 2).
+    lab_tutorial_hours_per_teaching_hour: int = 2
 
 
 @dataclass

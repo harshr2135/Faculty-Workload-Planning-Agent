@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from backend.core.domain.teaching_load import slot_teaching_load_hours, teaching_load_hours
 from backend.optimization.models.problem_definition import (
     AssignmentSlot,
     FacultyInput,
@@ -34,10 +35,12 @@ class GreedyWorkloadAllocator:
                 messages=["No teaching slots generated for this batch and semester."],
             )
 
-        loads: dict[int, int] = {member.id: 0 for member in problem.faculty}
+        # Teaching-load hours (lab/tutorial half-weighted), not raw contact hours.
+        loads: dict[int, float] = {member.id: 0.0 for member in problem.faculty}
         lab_sessions: dict[int, int] = {member.id: 0 for member in problem.faculty}
         theory_faculty_by_course_batch: dict[tuple[str, int], set[int]] = {}
         assignments: list[SlotAssignment] = []
+        hours_per_teaching_hour = problem.lab_tutorial_hours_per_teaching_hour
 
         for slot in problem.slots:
             if not slot.eligible_faculty_ids:
@@ -56,11 +59,18 @@ class GreedyWorkloadAllocator:
                     ],
                 )
 
+            load_delta = slot_teaching_load_hours(
+                slot.kind.value,
+                slot.weekly_hours,
+                hours_per_teaching_hour=hours_per_teaching_hour,
+            )
+
             if slot.kind == SlotKind.THEORY:
                 assigned_ids = self._pick_theory_faculty(
                     slot,
                     faculty_by_id,
                     loads,
+                    load_delta,
                     theory_faculty_by_course_batch,
                 )
             else:
@@ -68,6 +78,7 @@ class GreedyWorkloadAllocator:
                     slot,
                     faculty_by_id,
                     loads,
+                    load_delta,
                     lab_sessions,
                     problem.lab_faculty_per_session,
                 )
@@ -89,7 +100,7 @@ class GreedyWorkloadAllocator:
                 )
 
             for faculty_id in assigned_ids:
-                loads[faculty_id] += slot.weekly_hours
+                loads[faculty_id] += load_delta
                 if slot.kind == SlotKind.LAB:
                     lab_sessions[faculty_id] += 1
 
@@ -127,7 +138,8 @@ class GreedyWorkloadAllocator:
         self,
         slot: AssignmentSlot,
         faculty_by_id: dict[int, FacultyInput],
-        loads: dict[int, int],
+        loads: dict[int, float],
+        load_delta: float,
         theory_faculty_by_course_batch: dict[tuple[str, int], set[int]],
     ) -> list[int]:
         preferred = list(slot.specialization_matched_ids) or list(slot.eligible_faculty_ids)
@@ -137,7 +149,7 @@ class GreedyWorkloadAllocator:
         faculty_id = self._lowest_load_candidate(
             fresh if fresh else preferred,
             slot.eligible_faculty_ids,
-            slot.weekly_hours,
+            load_delta,
             faculty_by_id,
             loads,
         )
@@ -149,7 +161,8 @@ class GreedyWorkloadAllocator:
         self,
         slot: AssignmentSlot,
         faculty_by_id: dict[int, FacultyInput],
-        loads: dict[int, int],
+        loads: dict[int, float],
+        load_delta: float,
         lab_sessions: dict[int, int],
         required_count: int,
     ) -> list[int]:
@@ -160,7 +173,7 @@ class GreedyWorkloadAllocator:
             faculty_id = self._lowest_load_candidate(
                 remaining,
                 slot.eligible_faculty_ids,
-                slot.weekly_hours,
+                load_delta,
                 faculty_by_id,
                 loads,
                 lab_sessions=lab_sessions,
@@ -174,9 +187,9 @@ class GreedyWorkloadAllocator:
         self,
         preferred: list[int],
         eligible: tuple[int, ...],
-        hours: int,
+        load_delta: float,
         faculty_by_id: dict[int, FacultyInput],
-        loads: dict[int, int],
+        loads: dict[int, float],
         lab_sessions: dict[int, int] | None = None,
     ) -> int | None:
         candidates = [fid for fid in preferred if fid in eligible]
@@ -185,13 +198,11 @@ class GreedyWorkloadAllocator:
         if not candidates:
             return None
 
-        # Hard cap: weekly work hours may never exceed the designation maximum. A candidate
-        # who would breach the cap is removed entirely; if none remain the slot is left
-        # unassigned (surfaced as a workload_capacity_exceeded infeasibility upstream).
+        # Hard cap: teaching-load hours may never exceed the designation maximum.
         hours_legal = [
             faculty_id
             for faculty_id in candidates
-            if loads[faculty_id] + hours <= faculty_by_id[faculty_id].max_weekly_hours
+            if loads[faculty_id] + load_delta <= faculty_by_id[faculty_id].max_weekly_hours
         ]
         if not hours_legal:
             return None
@@ -247,7 +258,11 @@ def _build_summaries(
                 designation_key=faculty.designation_key,
                 theory_weekly_hours=theory_hours,
                 lab_weekly_hours=lab_hours,
-                total_weekly_hours=theory_hours + lab_hours,
+                total_weekly_hours=teaching_load_hours(
+                    theory_contact_hours=theory_hours,
+                    lab_contact_hours=lab_hours,
+                    hours_per_teaching_hour=problem.lab_tutorial_hours_per_teaching_hour,
+                ),
                 theory_course_count=len(theory_courses),
                 lab_course_count=len(lab_courses),
                 lab_session_count=lab_session_count,

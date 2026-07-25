@@ -9,7 +9,8 @@ from statistics import mean
 
 from backend.core.domain.course_type_config import is_pec_course_type, pec_pool_number
 from backend.core.domain.pec_config import pec_requires_lecture_hall
-from backend.core.domain.policy_config import designation_label_for
+from backend.core.domain.policy_config import designation_label_for, max_weekly_hours_for
+from backend.core.domain.teaching_load import format_teaching_load_hours, teaching_load_hours
 from backend.schemas.allocation import (
     AllocationRunRead,
     BatchSemesterPlanRead,
@@ -22,6 +23,7 @@ from backend.schemas.allocation_report import (
     BatchReportResponse,
     ConsolidatedFacultyRow,
     FacultyReportRow,
+    FacultyTeachingAssignment,
     PecReportRow,
 )
 
@@ -41,13 +43,25 @@ def generate_batch_report(
     executive_summary: str | None = None,
     markdown_override: str | None = None,
     narrative_source: str = "template",
+    include_faculty_allocation: bool = True,
 ) -> BatchReportResponse:
     slice_ = _slice_run(run, batch_code, semester_number)
     facts = _build_facts(run, slice_)
     generated_at = datetime.now(timezone.utc).isoformat()
-    markdown = markdown_override or _render_markdown(
-        facts, generated_at=generated_at, executive_summary=executive_summary
-    )
+    if markdown_override is not None:
+        markdown = markdown_override
+        if include_faculty_allocation:
+            faculty_md = render_run_faculty_allocation_markdown(run)
+            markdown = _inject_faculty_allocation(markdown, faculty_md)
+    else:
+        batch_body = _render_markdown(
+            facts, generated_at=generated_at, executive_summary=executive_summary
+        )
+        if include_faculty_allocation:
+            faculty_md = render_run_faculty_allocation_markdown(run)
+            markdown = _inject_faculty_allocation(batch_body, faculty_md)
+        else:
+            markdown = batch_body
     return BatchReportResponse(
         run_id=run.id,
         batch_code=batch_code,
@@ -58,6 +72,16 @@ def generate_batch_report(
         facts=facts,
         narrative_source=narrative_source,
     )
+
+
+def _inject_faculty_allocation(batch_markdown: str, faculty_markdown: str) -> str:
+    """Place the run-wide faculty section after the batch header, once."""
+    marker = "## Executive summary"
+    faculty_block = faculty_markdown.strip()
+    if marker in batch_markdown:
+        head, tail = batch_markdown.split(marker, 1)
+        return f"{head.rstrip()}\n\n{faculty_block}\n\n{marker}{tail}"
+    return f"{faculty_block}\n\n{batch_markdown}"
 
 
 def _slice_run(
@@ -121,6 +145,7 @@ def build_consolidated_faculty_rows(run: AllocationRunRead) -> list[Consolidated
             "theory_courses": set(),
             "lab_sessions": set(),
             "batches": set(),
+            "assignments": [],
         }
     )
 
@@ -137,6 +162,19 @@ def build_consolidated_faculty_rows(run: AllocationRunRead) -> list[Consolidated
                 batches = bucket["batches"]
                 assert isinstance(batches, set)
                 batches.add(assignment.batch_code)
+            teaching = bucket["assignments"]
+            assert isinstance(teaching, list)
+            teaching.append(
+                FacultyTeachingAssignment(
+                    batch_code=assignment.batch_code or "—",
+                    course_code=assignment.course_code,
+                    course_name=assignment.course_name,
+                    kind=assignment.kind,
+                    weekly_hours=assignment.weekly_hours,
+                    lab_sub_batch=assignment.lab_sub_batch,
+                    section_indices=list(assignment.section_indices),
+                )
+            )
             if assignment.kind == "lab":
                 bucket["lab_hours"] = int(bucket["lab_hours"]) + assignment.weekly_hours
                 lab_sessions = bucket["lab_sessions"]
@@ -156,9 +194,20 @@ def build_consolidated_faculty_rows(run: AllocationRunRead) -> list[Consolidated
         theory_courses = bucket["theory_courses"]
         lab_sessions = bucket["lab_sessions"]
         batches = bucket["batches"]
+        teaching = bucket["assignments"]
         assert isinstance(theory_courses, set)
         assert isinstance(lab_sessions, set)
         assert isinstance(batches, set)
+        assert isinstance(teaching, list)
+        sorted_assignments = sorted(
+            teaching,
+            key=lambda row: (
+                row.batch_code,
+                row.course_code,
+                row.kind,
+                row.lab_sub_batch or "",
+            ),
+        )
         rows.append(
             ConsolidatedFacultyRow(
                 faculty_id=faculty_id,
@@ -167,39 +216,133 @@ def build_consolidated_faculty_rows(run: AllocationRunRead) -> list[Consolidated
                 designation_label=designation_label_for(summary.designation_key if summary else None),
                 theory_hours=theory_hours,
                 lab_hours=lab_hours,
-                total_hours=theory_hours + lab_hours,
+                total_hours=teaching_load_hours(
+                    theory_contact_hours=theory_hours,
+                    lab_contact_hours=lab_hours,
+                ),
                 batch_codes=sorted(batches),
                 theory_courses=len(theory_courses),
                 lab_sessions=len(lab_sessions),
+                max_weekly_hours=max_weekly_hours_for(
+                    summary.designation_key if summary else None
+                ),
+                teaching_assignments=sorted_assignments,
             )
         )
 
     return sorted(rows, key=lambda row: (-row.total_hours, row.full_name))
 
 
-def render_consolidated_faculty_markdown(rows: list[ConsolidatedFacultyRow]) -> str:
-    """Render the run-wide faculty workload distribution as a markdown section."""
-    lines = ["## Consolidated faculty workload (all batches)", ""]
+def render_consolidated_faculty_markdown(
+    rows: list[ConsolidatedFacultyRow],
+    *,
+    violation_messages: list[str] | None = None,
+) -> str:
+    """Render overall faculty allocation, batch-wise subject lists, and run-wide policy warnings."""
+    lines = ["## Overall faculty allocation", ""]
     if not rows:
         lines.append("_No faculty assignments recorded for this run._")
-        return "\n".join(lines)
+        if violation_messages:
+            lines.extend(["", *_render_policy_warnings_section(violation_messages)])
+        return "\n".join(lines).rstrip() + "\n"
 
     lines.append(
-        "_Each faculty member's total teaching load across every batch and semester in this run._"
+        "_Department/run-wide totals. Theory/Lab columns are contact hours; Total is teaching "
+        "load (2 lab hours = 1 teaching hour). AICTE weekly-hour maximums apply to teaching load, "
+        "not per batch. Subject lists below show what each faculty member teaches in each batch._"
     )
     lines.append("")
     lines.append(
-        "| Faculty | Designation | Theory h | Lab h | Total h | Batches | Theory courses | Lab sessions |"
+        "| Faculty | Designation | Theory h | Lab h | Teaching load h | AICTE max h | Batches | "
+        "Theory courses | Lab sessions |"
     )
-    lines.append("| --- | --- | ---: | ---: | ---: | --- | ---: | ---: |")
+    lines.append("| --- | --- | ---: | ---: | ---: | ---: | --- | ---: | ---: |")
     for row in rows:
         designation = row.designation_label
         batches = ", ".join(row.batch_codes) or "—"
+        cap = _format_hour_cap(row.max_weekly_hours)
+        load = format_teaching_load_hours(row.total_hours)
         lines.append(
             f"| {row.full_name} | {designation} | {row.theory_hours} | {row.lab_hours} | "
-            f"{row.total_hours} | {batches} | {row.theory_courses} | {row.lab_sessions} |"
+            f"{load} | {cap} | {batches} | {row.theory_courses} | {row.lab_sessions} |"
         )
-    return "\n".join(lines)
+
+    lines.extend(["", "## Faculty teaching by batch", ""])
+    for row in rows:
+        cap = _format_hour_cap(row.max_weekly_hours)
+        load = format_teaching_load_hours(row.total_hours)
+        lines.append(
+            f"### {row.full_name} ({row.designation_label}) — "
+            f"{load}h teaching load / max {cap}h"
+        )
+        lines.append("")
+        if not row.teaching_assignments:
+            lines.append("_No teaching assignments._")
+            lines.append("")
+            continue
+
+        by_batch: dict[str, list[FacultyTeachingAssignment]] = defaultdict(list)
+        for item in row.teaching_assignments:
+            by_batch[item.batch_code].append(item)
+
+        for batch_code in sorted(by_batch):
+            lines.append(f"**{batch_code}**")
+            lines.append("")
+            for item in by_batch[batch_code]:
+                lines.append(f"- {_format_teaching_assignment(item)}")
+            lines.append("")
+
+    if violation_messages:
+        lines.extend(_render_policy_warnings_section(violation_messages))
+
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _render_policy_warnings_section(violation_messages: list[str]) -> list[str]:
+    lines = [
+        "## Policy warnings",
+        "",
+        "_AICTE policy checks on each faculty member's total load across all batches "
+        "in this allocation run._",
+        "",
+    ]
+    for message in violation_messages:
+        lines.append(f"- {message}")
+    lines.append("")
+    return lines
+
+
+def run_violation_messages(run: AllocationRunRead) -> list[str]:
+    """Run-wide policy warning messages (not filtered to a single batch)."""
+    return [row.message for row in run.violations]
+
+
+def render_run_faculty_allocation_markdown(run: AllocationRunRead) -> str:
+    """Overall faculty allocation + teaching-by-batch + run-wide policy warnings."""
+    return render_consolidated_faculty_markdown(
+        build_consolidated_faculty_rows(run),
+        violation_messages=run_violation_messages(run),
+    )
+
+
+def _format_teaching_assignment(item: FacultyTeachingAssignment) -> str:
+    kind_label = item.kind
+    if item.kind == "lab" and item.lab_sub_batch:
+        kind_label = f"lab {item.lab_sub_batch}"
+    sections = ""
+    if item.section_indices:
+        section_text = ", ".join(f"S{index}" for index in item.section_indices)
+        sections = f", {section_text}"
+    return (
+        f"`{item.course_code}` {item.course_name} "
+        f"({kind_label}{sections}, {item.weekly_hours}h)"
+    )
+
+
+def _format_hour_cap(max_weekly_hours: float | None) -> str:
+    if max_weekly_hours is None:
+        return "—"
+    return str(int(max_weekly_hours)) if float(max_weekly_hours).is_integer() else str(max_weekly_hours)
 
 
 def _build_facts(run: AllocationRunRead, slice_: _BatchSlice) -> BatchReportFacts:
@@ -306,9 +449,27 @@ def _faculty_rows_for_batch(
                 designation_label=designation_label_for(summary.designation_key if summary else None),
                 theory_hours=theory_hours,
                 lab_hours=lab_hours,
-                total_hours=theory_hours + lab_hours,
+                total_hours=teaching_load_hours(
+                    theory_contact_hours=theory_hours,
+                    lab_contact_hours=lab_hours,
+                ),
                 theory_courses=len(theory_courses),
                 lab_sessions=len(lab_sessions),
+                overall_theory_hours=summary.theory_weekly_hours if summary else theory_hours,
+                overall_lab_hours=summary.lab_weekly_hours if summary else lab_hours,
+                overall_total_hours=(
+                    summary.total_weekly_hours
+                    if summary
+                    else teaching_load_hours(
+                        theory_contact_hours=theory_hours,
+                        lab_contact_hours=lab_hours,
+                    )
+                ),
+                overall_theory_courses=summary.theory_course_count if summary else len(theory_courses),
+                overall_lab_sessions=summary.lab_session_count if summary else len(lab_sessions),
+                max_weekly_hours=max_weekly_hours_for(
+                    summary.designation_key if summary else None
+                ),
             )
         )
 
@@ -470,32 +631,11 @@ def _render_markdown(
 
     lines.extend(_render_pec_sections(facts))
 
-    lines.extend(
-        [
-            "## Faculty workload",
-            "",
-            "| Faculty | Designation | Theory h | Lab h | Total h | Theory courses | Lab sessions |",
-            "| --- | --- | ---: | ---: | ---: | ---: | ---: |",
-        ]
-    )
-    for row in facts.faculty_rows:
-        lines.append(
-            f"| {row.full_name} | {row.designation_label} | {row.theory_hours} | {row.lab_hours} | "
-            f"{row.total_hours} | {row.theory_courses} | {row.lab_sessions} |"
-        )
-    lines.append("")
-
     lines.extend(["## Laboratory & room utilization", ""])
     lines.append(f"- Classrooms used: {', '.join(facts.classrooms_used) or '—'}")
     lines.append(f"- Laboratories used: {', '.join(facts.laboratories_used) or '—'}")
     lines.append(f"- Lecture halls used: {', '.join(facts.lecture_halls_used) or '—'}")
     lines.append("")
-
-    if facts.violation_messages:
-        lines.extend(["## Policy warnings", ""])
-        for message in facts.violation_messages:
-            lines.append(f"- {message}")
-        lines.append("")
 
     if facts.timetable_messages:
         lines.extend(["## Timetable notes", ""])

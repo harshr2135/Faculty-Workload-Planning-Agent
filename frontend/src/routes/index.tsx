@@ -1,4 +1,6 @@
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
+import { AuthProvider } from "@/auth/AuthContext";
+import { RedirectIfAuthenticated, RequireAuth } from "@/auth/RequireAuth";
 import { AppShell } from "@/components/layout/AppShell";
 import DashboardPage from "@/pages/DashboardPage";
 import FacultyPage from "@/pages/FacultyPage";
@@ -8,23 +10,33 @@ import LaboratoriesPage from "@/pages/LaboratoriesPage";
 import TimetablePage from "@/pages/TimetablePage";
 import PoliciesPage from "@/pages/PoliciesPage";
 import AllocationsPage from "@/pages/AllocationsPage";
+import LoginPage from "@/pages/LoginPage";
 
 export function AppRoutes() {
   return (
     <BrowserRouter>
-      <Routes>
-        <Route element={<AppShell />}>
-          <Route index element={<DashboardPage />} />
-          <Route path="faculty" element={<FacultyPage />} />
-          <Route path="courses" element={<CoursesPage />} />
-          <Route path="classrooms" element={<ClassroomsPage />} />
-          <Route path="laboratories" element={<LaboratoriesPage />} />
-          <Route path="timetable" element={<TimetablePage />} />
-          <Route path="policies" element={<PoliciesPage />} />
-          <Route path="allocations" element={<AllocationsPage />} />
+      <AuthProvider>
+        <Routes>
+          <Route element={<RedirectIfAuthenticated />}>
+            <Route path="/login" element={<LoginPage />} />
+          </Route>
+
+          <Route element={<RequireAuth />}>
+            <Route element={<AppShell />}>
+              <Route index element={<DashboardPage />} />
+              <Route path="faculty" element={<FacultyPage />} />
+              <Route path="courses" element={<CoursesPage />} />
+              <Route path="classrooms" element={<ClassroomsPage />} />
+              <Route path="laboratories" element={<LaboratoriesPage />} />
+              <Route path="timetable" element={<TimetablePage />} />
+              <Route path="policies" element={<PoliciesPage />} />
+              <Route path="allocations" element={<AllocationsPage />} />
+            </Route>
+          </Route>
+
           <Route path="*" element={<Navigate to="/" replace />} />
-        </Route>
-      </Routes>
+        </Routes>
+      </AuthProvider>
     </BrowserRouter>
   );
 }

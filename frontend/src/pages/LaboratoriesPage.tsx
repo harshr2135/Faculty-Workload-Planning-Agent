@@ -18,6 +18,7 @@ export default function LaboratoriesPage() {
   return (
     <>
       <PageHeader
+        eyebrow="Master data"
         title="Laboratories"
         description="Lab rooms for continuous practical sessions"
       />

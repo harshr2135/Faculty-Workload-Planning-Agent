@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from backend.core.domain.policy_config import UNLIMITED_MAX_WEEKLY_HOURS
+from backend.core.domain.teaching_load import format_teaching_load_hours
 from backend.optimization.models.problem_definition import WorkloadProblem
 from backend.optimization.models.solution import OptimizationSolution, PolicyViolation, SolverStatus
 
@@ -14,8 +15,8 @@ def validate_solution(
     """Report AICTE soft-policy deviations.
 
     Both minimums (min theory courses / min lab sessions) and maximums (max weekly
-    hours / max lab sessions) are treated as soft: allocation is never blocked, but
-    faculty outside their designation's limits are flagged as policy warnings.
+    teaching-load hours / max lab sessions) are treated as soft: allocation is never blocked,
+    but faculty outside their designation's limits are flagged as policy warnings.
     """
     if solution.status not in (SolverStatus.OPTIMAL, SolverStatus.FEASIBLE):
         return solution.violations
@@ -61,8 +62,10 @@ def validate_solution(
                 PolicyViolation(
                     code="max_weekly_hours_exceeded",
                     message=(
-                        f"{faculty.full_name} ({label}) is assigned {summary.total_weekly_hours} "
-                        f"weekly hours; AICTE maximum is {int(faculty.max_weekly_hours)}."
+                        f"{faculty.full_name} ({label}) has teaching load "
+                        f"{format_teaching_load_hours(summary.total_weekly_hours)} h/week "
+                        f"(lab/tutorial at half weight); AICTE maximum is "
+                        f"{int(faculty.max_weekly_hours)}."
                     ),
                     faculty_id=faculty.id,
                 )

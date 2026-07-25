@@ -32,9 +32,21 @@ class Settings(BaseSettings):
     fwp_openai_api_key: str | None = None
     fwp_groq_api_key: str | None = None
 
+    # --- SMTP (faculty timetable email) ---
+    fwp_smtp_host: str = ""
+    fwp_smtp_port: int = 587
+    fwp_smtp_user: str = ""
+    fwp_smtp_password: str = ""
+    fwp_smtp_from: str = "noreply@university.edu"
+    fwp_smtp_use_tls: bool = True
+
     @property
     def cors_origins_list(self) -> list[str]:
         return [origin.strip() for origin in self.fwp_cors_origins.split(",") if origin.strip()]
+
+    @property
+    def smtp_configured(self) -> bool:
+        return bool(self.fwp_smtp_host.strip() and self.fwp_smtp_from.strip())
 
 
 @lru_cache

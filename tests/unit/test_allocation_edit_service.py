@@ -40,8 +40,10 @@ def test_recompute_faculty_summaries_after_edit() -> None:
 
     assert by_id[10]["theory_weekly_hours"] == 3
     assert by_id[10]["lab_weekly_hours"] == 2
-    assert by_id[10]["total_weekly_hours"] == 5
+    # Teaching load: 3 theory + 2 lab / 2 = 4
+    assert by_id[10]["total_weekly_hours"] == 4
     assert by_id[20]["lab_weekly_hours"] == 2
+    assert by_id[20]["total_weekly_hours"] == 1
 
 
 def test_sync_timetable_entry_faculty() -> None:
